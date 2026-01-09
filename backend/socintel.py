@@ -2,20 +2,26 @@ import requests
 import whois
 import dns.resolver
 import argparse
+import json
+import sys
+from dotenv import load_dotenv
+import os
 from datetime import datetime
+load_dotenv()
 
-VT_API_KEY = "SUA_API_VT"
-ABUSE_API_KEY = "SUA_API_ABUSE"
-OTX_API_KEY = "SUA_API_OTX"
+VT_API_KEY = os.getenv("VT_API_KEY")
+ABUSE_API_KEY = os.getenv("ABUSE_API_KEY")
+OTX_API_KEY = os.getenv("OTX_API_KEY")
+
 
 risk = 0
 findings = []
 
-# ---------------- IP ----------------
+
+
 def ip_intel(ip):
     global risk
 
-    # VirusTotal
     vt_url = f"https://www.virustotal.com/api/v3/ip_addresses/{ip}"
     headers = {"x-apikey": VT_API_KEY}
     r = requests.get(vt_url, headers=headers)
@@ -26,7 +32,6 @@ def ip_intel(ip):
             risk += 40
             findings.append(f"VirusTotal: {mal} detecções maliciosas")
 
-    # AbuseIPDB
     abuse_url = "https://api.abuseipdb.com/api/v2/check"
     headers = {"Key": ABUSE_API_KEY, "Accept": "application/json"}
     params = {"ipAddress": ip, "maxAgeInDays": 90}
@@ -37,7 +42,6 @@ def ip_intel(ip):
             risk += 30
             findings.append(f"AbuseIPDB: score {score}%")
 
-    # AlienVault OTX
     otx_url = f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general"
     headers = {"X-OTX-API-KEY": OTX_API_KEY}
     r = requests.get(otx_url, headers=headers)
@@ -47,11 +51,9 @@ def ip_intel(ip):
             risk += 25
             findings.append(f"AlienVault OTX: IP presente em {pulses} pulses")
 
-# ---------------- DOMAIN ----------------
 def domain_intel(domain):
     global risk
 
-    # VirusTotal
     vt_url = f"https://www.virustotal.com/api/v3/domains/{domain}"
     headers = {"x-apikey": VT_API_KEY}
     r = requests.get(vt_url, headers=headers)
@@ -62,28 +64,26 @@ def domain_intel(domain):
             risk += 40
             findings.append(f"VirusTotal: {mal} detecções maliciosas")
 
-    # WHOIS
     try:
         w = whois.whois(domain)
         creation = w.creation_date
         if isinstance(creation, list):
             creation = creation[0]
-        age = (datetime.now() - creation).days
-        if age < 30:
-            risk += 30
-            findings.append(f"Domínio criado há {age} dias")
-    except:
+        if creation:
+            age = (datetime.now() - creation).days
+            if age < 30:
+                risk += 30
+                findings.append(f"Domínio criado há {age} dias")
+    except Exception:
         findings.append("WHOIS: falha ao obter dados")
 
-    # MX Record
     try:
         dns.resolver.resolve(domain, 'MX')
         findings.append("MX record presente (envio de e-mail possível)")
-    except:
+    except Exception:
         risk += 20
         findings.append("Sem MX record (domínio suspeito)")
 
-    # AlienVault OTX
     otx_url = f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/general"
     headers = {"X-OTX-API-KEY": OTX_API_KEY}
     r = requests.get(otx_url, headers=headers)
@@ -93,11 +93,9 @@ def domain_intel(domain):
             risk += 25
             findings.append(f"AlienVault OTX: domínio presente em {pulses} pulses")
 
-# ---------------- URL ----------------
 def url_intel(url):
     global risk
 
-    # URLhaus
     uh_url = "https://urlhaus-api.abuse.ch/v1/url/"
     data = {"url": url}
     r = requests.post(uh_url, data=data)
@@ -107,7 +105,6 @@ def url_intel(url):
             risk += 40
             findings.append("URLhaus: URL listada como maliciosa")
 
-# ---------------- EMAIL ----------------
 def email_intel(email):
     if "@" not in email:
         findings.append("Email inválido")
@@ -116,7 +113,6 @@ def email_intel(email):
     findings.append(f"Domínio do email: {domain}")
     domain_intel(domain)
 
-# ---------------- VERDICT ----------------
 def verdict():
     if risk >= 70:
         return "ALTO RISCO – Provável ameaça (escalar / bloquear)"
@@ -125,17 +121,30 @@ def verdict():
     else:
         return "BAIXO RISCO – Possível falso positivo"
 
-# ---------------- MAIN ----------------
+def print_human():
+    print("\n🔎 SOCINTEL - RESULTADO\n")
+    print(f"RISK SCORE: {risk}/100\n")
+    for f in findings:
+        print(f"✔ {f}")
+    print("\n📌 VEREDITO SOC:")
+    print(verdict())
+
+def print_json():
+    print(json.dumps({
+        "risk": risk,
+        "findings": findings,
+        "verdict": verdict()
+    }))
+
 def main():
     parser = argparse.ArgumentParser(description="SOCINTEL v2 - OSINT para SOC N1")
-    parser.add_argument("--ip", help="Analisar IP")
-    parser.add_argument("--domain", help="Analisar domínio")
-    parser.add_argument("--email", help="Analisar email")
-    parser.add_argument("--url", help="Analisar URL")
+    parser.add_argument("--ip")
+    parser.add_argument("--domain")
+    parser.add_argument("--email")
+    parser.add_argument("--url")
+    parser.add_argument("--json", action="store_true", help="Saída em JSON (para GUI)")
 
     args = parser.parse_args()
-
-    print("\n🔎 SOCINTEL - RESULTADO\n")
 
     if args.ip:
         ip_intel(args.ip)
@@ -146,12 +155,10 @@ def main():
     if args.url:
         url_intel(args.url)
 
-    print(f"RISK SCORE: {risk}/100\n")
-    for f in findings:
-        print(f"✔ {f}")
-
-    print("\n📌 VEREDITO SOC:")
-    print(verdict())
+    if args.json:
+        print_json()
+    else:
+        print_human()
 
 if __name__ == "__main__":
     main()

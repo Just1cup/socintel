@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <title>SOCINTEL</title>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+ <script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          bg: "#0a0712",
+          panel: "#120c1f",
+          primary: "#5b21b6",
+          primarySoft: "#7c3aed",
+          borderDark: "#2b1f47",
+          success: "#22c55e",
+          warning: "#facc15",
+          danger: "#ef4444"
+        }
+      }
+    }
+  }
+</script>
+
+<body class="bg-bg text-gray-200 font-sans min-h-screen">
+
+  <!-- TOP BAR -->
+  <header class="border-b border-borderDark bg-panel px-8 py-4 flex justify-between items-center">
+    <div>
+      <h1 class="text-xl font-bold text-primary">SOCINTEL</h1>
+      <p class="text-xs text-gray-400">Threat Intelligence Console</p>
+    </div>
+    <div class="text-xs text-gray-400">
+      Purple Team OSINT
+    </div>
+  </header>
+
+  <!-- MAIN -->
+  <main class="p-8 grid grid-cols-12 gap-6">
+
+    <!-- LEFT PANEL -->
+    <section class="col-span-4 bg-panel border border-borderDark rounded-lg p-6">
+
+      <h2 class="text-sm font-semibold text-primary mb-4 uppercase">
+        Nova Análise
+      </h2>
+
+      <label class="text-xs text-gray-400">Tipo</label>
+      <select id="type"
+        class="w-full mb-4 mt-1 bg-bg border border-borderDark rounded px-3 py-2 focus:ring-2 focus:ring-primary outline-none">
+        <option value="ip">IP Address</option>
+        <option value="domain">Domain</option>
+        <option value="email">Email</option>
+        <option value="url">URL</option>
+      </select>
+
+      <label class="text-xs text-gray-400">Valor</label>
+      <input id="value"
+        placeholder="8.8.8.8 | example.com"
+        class="w-full mt-1 bg-bg border border-borderDark rounded px-3 py-2 focus:ring-2 focus:ring-primary outline-none" />
+
+      <button onclick="analyze()"
+        class="w-full mt-6 bg-primary hover:bg-purple-500 transition rounded py-2 font-semibold">
+        Executar Análise
+      </button>
+
+    </section>
+
+    <!-- RIGHT PANEL -->
+    <section class="col-span-8 bg-panel border border-borderDark rounded-lg p-6 flex flex-col">
+
+      <!-- SCORE -->
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-sm font-semibold text-primary uppercase">
+          Resultado
+        </h2>
+
+        <div id="scoreBadge"
+          class="px-3 py-1 rounded text-xs font-bold bg-borderDark text-gray-400">
+          Sem análise
+        </div>
+      </div>
+
+      <!-- OUTPUT -->
+      <pre id="output"
+        class="flex-1 bg-bg border border-borderDark rounded p-4 text-sm font-mono overflow-auto text-gray-300">
+Aguardando execução...
+      </pre>
+
+      <div id="links" class="mt-4 space-y-2 text-sm"></div>
+
+
+    </section>
+
+  </main>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
