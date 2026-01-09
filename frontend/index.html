@@ -3,100 +3,171 @@
 <head>
   <meta charset="UTF-8" />
   <title>SOCINTEL</title>
-
+  <link rel="stylesheet" href="assets/style.css">
   <script src="https://cdn.tailwindcss.com"></script>
- <script>
-  tailwind.config = {
-    theme: {
-      extend: {
-        colors: {
-          bg: "#0a0712",
-          panel: "#120c1f",
-          primary: "#5b21b6",
-          primarySoft: "#7c3aed",
-          borderDark: "#2b1f47",
-          success: "#22c55e",
-          warning: "#facc15",
-          danger: "#ef4444"
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            bg: "#0a0712",
+            panel: "#120c1f",
+            primary: "#5b21b6",
+            primarySoft: "#7c3aed",
+            borderDark: "#2b1f47",
+            success: "#22c55e",
+            warning: "#facc15",
+            danger: "#dc2626"
+          }
         }
       }
     }
-  }
-</script>
+  </script>
+</head>
 
-<body class="bg-bg text-gray-200 font-sans min-h-screen">
+<body class="font-sans min-h-screen transition-colors duration-300"
+      style="background-color: var(--color-bg); color: var(--color-text);">
 
-  <!-- TOP BAR -->
-  <header class="border-b border-borderDark bg-panel px-8 py-4 flex justify-between items-center">
+  <header class="border-b px-8 py-5 flex justify-between items-center"
+          style="border-color: var(--color-border);
+                 background: linear-gradient(to right, var(--color-panel), var(--color-bg), var(--color-panel));">
+
     <div>
-      <h1 class="text-xl font-bold text-primary">SOCINTEL</h1>
-      <p class="text-xs text-gray-400">Threat Intelligence Console</p>
+      <h1 class="flex items-center gap-4 text-[34px] font-bold leading-none h-[180px]"
+          style="color: var(--color-primary);">
+        <img src="assets/logo.png" alt="" class="w-[180px] h-[180px] object-contain">
+        <span class="tracking-wider">
+          SOCINTEL <span class="opacity-60">&gt;</span>
+        </span>
+      </h1>
+
+      <p class="text-xs opacity-70">
+        Open-Source Cyber Threat Intelligence Platform
+      </p>
     </div>
-    <div class="text-xs text-gray-400">
-      Purple Team OSINT
+
+    <div class="flex items-center gap-6 text-xs opacity-70">
+      <span>SOC Analyst • IOC Investigation & Enrichment</span>
+
+<button id="themeToggle" class="px-4 py-1.5 rounded-md font-semibold tracking-wide transition-all duration-200" style="
+    background-color: var(--toggle-bg);
+    color: var(--toggle-text);
+  ">
+  DARK
+</button>
+
     </div>
   </header>
 
-  <!-- MAIN -->
   <main class="p-8 grid grid-cols-12 gap-6">
 
-    <!-- LEFT PANEL -->
-    <section class="col-span-4 bg-panel border border-borderDark rounded-lg p-6">
+    <section class="col-span-4 border rounded-lg p-6 shadow-lg"
+      style="
+        background-color: var(--color-panel);
+        border-color: var(--color-border);
+      ">
 
-      <h2 class="text-sm font-semibold text-primary mb-4 uppercase">
-        Nova Análise
+      <h2 class="text-sm font-semibold uppercase mb-4"
+          style="color: var(--color-primary);">
+        Iniciar Investigação
       </h2>
 
-      <label class="text-xs text-gray-400">Tipo</label>
+      <label class="text-xs opacity-70">
+        Tipo de Indicador (IOC)
+      </label>
+
       <select id="type"
-        class="w-full mb-4 mt-1 bg-bg border border-borderDark rounded px-3 py-2 focus:ring-2 focus:ring-primary outline-none">
-        <option value="ip">IP Address</option>
-        <option value="domain">Domain</option>
-        <option value="email">Email</option>
+        class="w-full mb-4 mt-1 rounded px-3 py-2 outline-none focus:ring-2"
+        style="
+          background-color: var(--color-bg);
+          border: 1px solid var(--color-border);
+          color: var(--color-text);
+        ">
+        <option value="ip">Endereço IP</option>
+        <option value="domain">Domínio</option>
+        <option value="email">Endereço de Email</option>
         <option value="url">URL</option>
         <option value="hash">Hash (MD5 / SHA1 / SHA256)</option>
       </select>
 
-      <label class="text-xs text-gray-400">Valor</label>
-      <input id="value"
-        placeholder="8.8.8.8 | example.com"
-        class="w-full mt-1 bg-bg border border-borderDark rounded px-3 py-2 focus:ring-2 focus:ring-primary outline-none" />
+      <label class="text-xs opacity-70">
+        Valor do Indicador
+      </label>
 
-      <button onclick="analyze()"
-        class="w-full mt-6 bg-primary hover:bg-purple-500 transition rounded py-2 font-semibold">
-        Executar Análise
+      <input id="value"
+        placeholder="Ex: 8.8.8.8 | example.com | hash"
+        class="w-full mt-1 rounded px-3 py-2 outline-none focus:ring-2"
+        style="
+          background-color: var(--color-bg);
+          border: 1px solid var(--color-border);
+          color: var(--color-text);
+        " />
+
+      <button id="pesquisa" onclick="analyze()"
+        class="w-full mt-6 rounded-md py-2 font-semibold tracking-wide transition-all duration-200"
+        style="
+          background-color: var(--color-primary);
+          color: #fff;
+        ">
+        Executar Análise OSINT
       </button>
 
     </section>
 
-    <!-- RIGHT PANEL -->
-    <section class="col-span-8 bg-panel border border-borderDark rounded-lg p-6 flex flex-col">
+    <section class="col-span-8 border rounded-lg p-6 flex flex-col shadow-lg"
+      style="
+        background-color: var(--color-panel);
+        border-color: var(--color-border);
+      ">
 
-      <!-- SCORE -->
       <div class="flex items-center justify-between mb-4">
-        <h2 class="text-sm font-semibold text-primary uppercase">
-          Resultado
+        <h2 class="text-sm font-semibold uppercase"
+            style="color: var(--color-primary);">
+          Resultado da Análise
         </h2>
 
         <div id="scoreBadge"
-          class="px-3 py-1 rounded text-xs font-bold bg-borderDark text-gray-400">
-          Sem análise
+          class="px-3 py-1 rounded text-xs font-bold"
+          style="
+            background-color: var(--color-border);
+            color: var(--color-text);
+          ">
+          Nenhum risco avaliado
         </div>
       </div>
 
-      <!-- OUTPUT -->
       <pre id="output"
-        class="flex-1 bg-bg border border-borderDark rounded p-4 text-sm font-mono overflow-auto text-gray-300">
-Aguardando execução...
+        class="flex-1 rounded p-4 text-sm font-mono overflow-auto"
+        style="
+          background-color: var(--color-bg);
+          border: 1px solid var(--color-border);
+          color: var(--color-text);
+        ">
+Aguardando submissão de indicador para análise OSINT...
       </pre>
 
       <div id="links" class="mt-4 space-y-2 text-sm"></div>
 
-
     </section>
-
   </main>
+  <script>
+    const toggle = document.getElementById('themeToggle');
+    const html = document.documentElement;
 
+    toggle.addEventListener('click', () => {
+      const isLight = html.classList.toggle('light');
+      toggle.textContent = isLight ? 'LIGHT' : 'DARK';
+    });
+
+     document.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      const btn = document.getElementById('pesquisa');
+      if (btn) {
+        btn.click();
+      }
+    }
+  });
+  </script>
   <script src="renderer.js"></script>
 </body>
 </html>
