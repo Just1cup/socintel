@@ -1,3 +1,18 @@
+function setType(type) {
+  document.getElementById("type").value = type;
+  
+  // Atualizar estilo dos botões
+  document.querySelectorAll(".type-btn").forEach(btn => {
+    if (btn.dataset.type === type) {
+      btn.style.backgroundColor = "var(--color-primary)";
+      btn.style.color = "white";
+    } else {
+      btn.style.backgroundColor = "var(--color-border)";
+      btn.style.color = "var(--color-text)";
+    }
+  });
+}
+
 async function analyze() {
   const type = document.getElementById("type").value;
   const value = document.getElementById("value").value;

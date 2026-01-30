@@ -172,15 +172,17 @@ def verdict():
 
 def print_human():
     print("\n🔎 SOCINTEL - RESULTADO\n")
-    print(f"RISK SCORE: {risk}/100\n")
+    capped_risk = min(risk, 100)
+    print(f"RISK SCORE: {capped_risk}/100\n")
     for f in findings:
         print(f"✔ {f}")
     print("\n📌 VEREDITO SOC:")
     print(verdict())
 
 def print_json():
+    capped_risk = min(risk, 100)
     print(json.dumps({
-        "risk": risk,
+        "risk": capped_risk,
         "findings": findings,
         "verdict": verdict()
     }))

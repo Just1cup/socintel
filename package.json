@@ -1,0 +1,17 @@
+{
+  "name": "socintel-ui",
+  "main": "frontend/main.js",
+  "scripts": {
+    "start": "electron .",
+    "electron": "electron ."
+  },
+  "version": "1.0.0",
+  "description": "",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "electron": "^40.1.0"
+  }
+}
