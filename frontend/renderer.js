@@ -78,6 +78,13 @@ function generateLinks(type, value) {
     );
   }
 
+  if (type === "hash") {
+    links.push(
+      vtLink(`https://www.virustotal.com/gui/file/${value}`, "VirusTotal"),
+      vtLink(`https://bazaar.abuse.ch/browse/?q=${value}`, "Malware Bazaar")
+    );
+  }
+
   return `
     <div class="border-t border-borderDark pt-3">
       <p class="text-xs text-gray-400 mb-2 uppercase">Links OSINT</p>

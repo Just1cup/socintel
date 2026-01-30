@@ -22,34 +22,60 @@ findings = []
 def ip_intel(ip):
     global risk
 
+    # VirusTotal
     vt_url = f"https://www.virustotal.com/api/v3/ip_addresses/{ip}"
     headers = {"x-apikey": VT_API_KEY}
-    r = requests.get(vt_url, headers=headers)
-    if r.status_code == 200:
-        stats = r.json()["data"]["attributes"]["last_analysis_stats"]
-        mal = stats.get("malicious", 0)
-        if mal > 0:
-            risk += 40
-            findings.append(f"VirusTotal: {mal} detecções maliciosas")
+    try:
+        r = requests.get(vt_url, headers=headers, timeout=5)
+        if r.status_code == 200:
+            stats = r.json()["data"]["attributes"]["last_analysis_stats"]
+            mal = stats.get("malicious", 0)
+            if mal > 0:
+                vt_score = min(mal * 3, 40)
+                risk += vt_score
+                findings.append(f"VirusTotal: {mal} detecções maliciosas (+{vt_score} pontos)")
+            else:
+                findings.append(f"VirusTotal: nenhuma detecção maliciosa")
+        else:
+            findings.append(f"VirusTotal: status {r.status_code}")
+    except Exception as e:
+        findings.append(f"VirusTotal: erro - {str(e)}")
 
+    # AbuseIPDB
     abuse_url = "https://api.abuseipdb.com/api/v2/check"
     headers = {"Key": ABUSE_API_KEY, "Accept": "application/json"}
     params = {"ipAddress": ip, "maxAgeInDays": 90}
-    r = requests.get(abuse_url, headers=headers, params=params)
-    if r.status_code == 200:
-        score = r.json()["data"]["abuseConfidenceScore"]
-        if score > 0:
-            risk += 30
-            findings.append(f"AbuseIPDB: score {score}%")
+    try:
+        r = requests.get(abuse_url, headers=headers, params=params, timeout=5)
+        if r.status_code == 200:
+            score = r.json()["data"]["abuseConfidenceScore"]
+            if score > 0:
+                risk += score
+                findings.append(f"AbuseIPDB: score {score}% (+{score} pontos)")
+            else:
+                findings.append(f"AbuseIPDB: score 0% (sem risco)")
+        else:
+            findings.append(f"AbuseIPDB: status {r.status_code}")
+    except Exception as e:
+        findings.append(f"AbuseIPDB: erro - {str(e)}")
 
+    # AlienVault OTX
     otx_url = f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general"
     headers = {"X-OTX-API-KEY": OTX_API_KEY}
-    r = requests.get(otx_url, headers=headers)
-    if r.status_code == 200:
-        pulses = r.json()["pulse_info"]["count"]
-        if pulses > 0:
-            risk += 25
-            findings.append(f"AlienVault OTX: IP presente em {pulses} pulses")
+    try:
+        r = requests.get(otx_url, headers=headers, timeout=5)
+        if r.status_code == 200:
+            pulses = r.json()["pulse_info"]["count"]
+            if pulses > 0:
+                otx_score = min(pulses * 2, 30)
+                risk += otx_score
+                findings.append(f"AlienVault OTX: IP presente em {pulses} pulses (+{otx_score} pontos)")
+            else:
+                findings.append(f"AlienVault OTX: IP não encontrado em nenhum pulse")
+        else:
+            findings.append(f"AlienVault OTX: status {r.status_code}")
+    except Exception as e:
+        findings.append(f"AlienVault OTX: erro - {str(e)}")
 
 def domain_intel(domain):
     global risk
@@ -104,6 +130,29 @@ def url_intel(url):
         if status == "ok":
             risk += 40
             findings.append("URLhaus: URL listada como maliciosa")
+        else:
+            findings.append("URLhaus: URL não encontrada")
+
+def hash_intel(hash_value):
+    global risk
+
+    vt_url = f"https://www.virustotal.com/api/v3/files/{hash_value}"
+    headers = {"x-apikey": VT_API_KEY}
+    try:
+        r = requests.get(vt_url, headers=headers, timeout=5)
+        if r.status_code == 200:
+            stats = r.json()["data"]["attributes"]["last_analysis_stats"]
+            mal = stats.get("malicious", 0)
+            if mal > 0:
+                vt_score = min(mal * 3, 40)
+                risk += vt_score
+                findings.append(f"VirusTotal: {mal} detecções maliciosas (+{vt_score} pontos)")
+            else:
+                findings.append(f"VirusTotal: hash não detectado como malicioso")
+        else:
+            findings.append(f"VirusTotal: status {r.status_code}")
+    except Exception as e:
+        findings.append(f"VirusTotal: erro - {str(e)}")
 
 def email_intel(email):
     if "@" not in email:
@@ -142,6 +191,7 @@ def main():
     parser.add_argument("--domain")
     parser.add_argument("--email")
     parser.add_argument("--url")
+    parser.add_argument("--hash")
     parser.add_argument("--json", action="store_true", help="Saída em JSON (para GUI)")
 
     args = parser.parse_args()
@@ -154,6 +204,8 @@ def main():
         email_intel(args.email)
     if args.url:
         url_intel(args.url)
+    if args.hash:
+        hash_intel(args.hash)
 
     if args.json:
         print_json()

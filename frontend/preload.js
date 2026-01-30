@@ -8,7 +8,7 @@ const script = path.join(__dirname, "../backend/socintel.py");
 contextBridge.exposeInMainWorld("socintel", {
   analyze: (type, value) => {
     return new Promise((resolve, reject) => {
-      const cmd = `python3 "${script}" --${type} "${value}" --json`;
+      const cmd = `python "${script}" --${type} "${value}" --json`;
 
       exec(cmd, (error, stdout, stderr) => {
         if (error) {
