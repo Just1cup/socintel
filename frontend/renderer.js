@@ -13,6 +13,58 @@ function setType(type) {
   });
 }
 
+// Funções de histórico
+const MAX_HISTORY = 10;
+let searchHistory = []; // Armazenar em memória apenas (não persiste)
+
+function saveToHistory(type, value) {
+  // Adicionar novo item no início
+  searchHistory.unshift({ type, value, timestamp: new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) });
+  
+  // Remover duplicatas (manter apenas a mais recente)
+  searchHistory = searchHistory.filter((item, index, self) => 
+    index === self.findIndex(t => t.type === item.type && t.value === item.value)
+  );
+  
+  // Manter apenas os últimos MAX_HISTORY
+  searchHistory = searchHistory.slice(0, MAX_HISTORY);
+  
+  loadHistory();
+}
+
+function loadHistory() {
+  const historyDiv = document.getElementById("history");
+  
+  if (searchHistory.length === 0) {
+    historyDiv.innerHTML = '<p class="opacity-50">Nenhuma busca recente</p>';
+    return;
+  }
+  
+  historyDiv.innerHTML = searchHistory.map((item, index) => `
+    <div onclick="loadFromHistory('${item.type}', '${item.value.replace(/'/g, "\\'")}')"
+      class="p-2 rounded cursor-pointer transition-colors"
+      style="
+        background-color: var(--color-bg);
+        border: 1px solid var(--color-border);
+        color: var(--color-text);
+      "
+      onmouseover="this.style.backgroundColor='var(--color-border)'"
+      onmouseout="this.style.backgroundColor='var(--color-bg)'">
+      <div class="font-semibold text-xs">${item.type.toUpperCase()}</div>
+      <div class="text-xs opacity-75 truncate">${item.value}</div>
+      <div class="text-xs opacity-50">${item.timestamp}</div>
+    </div>
+  `).join("");
+}
+
+function loadFromHistory(type, value) {
+  setType(type);
+  document.getElementById("value").value = value;
+}
+
+// Carregar histórico ao inicializar
+document.addEventListener("DOMContentLoaded", loadHistory);
+
 async function analyze() {
   const type = document.getElementById("type").value;
   const value = document.getElementById("value").value;
@@ -48,6 +100,9 @@ async function analyze() {
 
     // Links OSINT
     linksDiv.innerHTML = generateLinks(type, value);
+
+    // Salvar no histórico
+    saveToHistory(type, value);
 
   } catch (err) {
     output.innerText = "Erro:\n" + err;
