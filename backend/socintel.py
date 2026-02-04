@@ -8,6 +8,8 @@ from dotenv import load_dotenv
 import os
 from datetime import datetime
 load_dotenv()
+from bs4 import BeautifulSoup
+from urllib.parse import urlparse
 
 VT_API_KEY = os.getenv("VT_API_KEY")
 ABUSE_API_KEY = os.getenv("ABUSE_API_KEY")
@@ -76,6 +78,45 @@ def ip_intel(ip):
             findings.append(f"AlienVault OTX: status {r.status_code}")
     except Exception as e:
         findings.append(f"AlienVault OTX: erro - {str(e)}")
+
+    # RDAP / ASN / Owner enrichment
+    rdap_ip_intel(ip)
+
+
+def rdap_ip_intel(ip):
+    """
+    Enriquecimento via RDAP (sem API key): owner/handle, país e range.
+    NÃO indica malícia por si só, então soma poucos pontos.
+    """
+    global risk
+
+    rdap_endpoints = [
+        f"https://rdap.arin.net/registry/ip/{ip}",
+        f"https://rdap.db.ripe.net/ip/{ip}",
+        f"https://rdap.apnic.net/ip/{ip}",
+        f"https://rdap.lacnic.net/rdap/ip/{ip}",
+    ]
+
+    for url in rdap_endpoints:
+        try:
+            r = requests.get(url, timeout=8)
+            if r.status_code != 200:
+                continue
+
+            data = r.json()
+
+            name = data.get("name") or data.get("handle") or "unknown"
+            country = data.get("country") or "unknown"
+            start = data.get("startAddress") or ""
+            end = data.get("endAddress") or ""
+
+            findings.append(f"RDAP: owner={name} country={country} range={start}-{end}")
+            risk += 2
+            return
+        except Exception:
+            continue
+	
+    findings.append("RDAP: não foi possível obter dados (endpoints falharam)")
 
 def domain_intel(domain):
     global risk
@@ -170,6 +211,93 @@ def verdict():
     else:
         return "BAIXO RISCO – Possível falso positivo"
 
+def normalize_mac(mac: str) -> str:
+    mac = (mac or "").strip().lower()
+    mac = mac.replace("-", ":").replace(".", ":")
+    return mac
+
+
+def mac_intel(mac: str):
+    global risk
+
+    mac = normalize_mac(mac)
+    if not mac:
+        findings.append("MAC Vendor: MAC inválido")
+        return
+
+    try:
+        r = requests.get(
+            f"https://api.macvendors.com/{mac}",
+            timeout=8
+        )
+
+        if r.status_code == 200 and r.text:
+            vendor = r.text.strip()
+            findings.append(f"MAC Vendor: {vendor}")
+            risk += 1  # enrichment leve
+        elif r.status_code == 404:
+            findings.append("MAC Vendor: fabricante não encontrado")
+        else:
+            findings.append(f"MAC Vendor: erro HTTP {r.status_code}")
+
+    except Exception as e:
+        findings.append(f"MAC Vendor: erro - {str(e)}")
+
+def siteconfiavel_intel(target):
+    global risk
+
+    try:
+        # Normaliza domínio
+        target = target.strip()
+
+        if target.startswith("http://") or target.startswith("https://"):
+            domain = urlparse(target).netloc
+        else:
+            domain = target
+
+        domain = domain.replace("www.", "")
+
+        url = f"https://www.siteconfiavel.com.br/site/{domain}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (SOCINTEL OSINT Scanner)"
+        }
+
+        r = requests.get(url, headers=headers, timeout=8)
+
+        if r.status_code != 200:
+            findings.append("SiteConfiavel: não foi possível consultar")
+            return
+
+        soup = BeautifulSoup(r.text, "html.parser")
+        page_text = soup.get_text(" ", strip=True).lower()
+
+        # Heurísticas SOC-friendly
+        if any(x in page_text for x in [
+            "não é confiável",
+            "nao é confiavel",
+            "site perigoso",
+            "site suspeito",
+            "cuidado"
+        ]):
+            findings.append("SiteConfiavel: ALERTA – site classificado como NÃO confiável")
+            risk += 10
+
+        elif any(x in page_text for x in [
+            "site confiável",
+            "é confiável",
+            "é seguro",
+            "site seguro"
+        ]):
+            findings.append("SiteConfiavel: site classificado como confiável")
+
+        else:
+            findings.append("SiteConfiavel: sem classificação clara")
+
+    except Exception as e:
+        findings.append(f"SiteConfiavel: erro - {str(e)}")
+
+
+
 def print_human():
     print("\n🔎 SOCINTEL - RESULTADO\n")
     capped_risk = min(risk, 100)
@@ -194,6 +322,7 @@ def main():
     parser.add_argument("--email")
     parser.add_argument("--url")
     parser.add_argument("--hash")
+    parser.add_argument("--mac", help="Endereço MAC para identificar fabricante (MACVendors)")
     parser.add_argument("--json", action="store_true", help="Saída em JSON (para GUI)")
 
     args = parser.parse_args()
@@ -209,6 +338,8 @@ def main():
     if args.hash:
         hash_intel(args.hash)
 
+    if args.mac:
+        mac_intel(args.mac)
     if args.json:
         print_json()
     else:
