@@ -1,5 +1,4 @@
 import requests
-import whois
 import dns.resolver
 import argparse
 import json
@@ -7,6 +6,7 @@ import sys
 from dotenv import load_dotenv
 import os
 from datetime import datetime
+import socket
 load_dotenv()
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
@@ -118,6 +118,59 @@ def rdap_ip_intel(ip):
 	
     findings.append("RDAP: não foi possível obter dados (endpoints falharam)")
 
+def whois_socket_lookup(domain):
+    """
+    Consulta WHOIS via socket (porta 43).
+    Retorna dict com: creation_date, status, organization, etc.
+    """
+    try:
+        whois_server = "whois.iana.org"
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5)
+        sock.connect((whois_server, 43))
+        sock.send(f"{domain}\r\n".encode())
+        
+        response = b""
+        while True:
+            try:
+                data = sock.recv(4096)
+                if not data:
+                    break
+                response += data
+            except socket.timeout:
+                break
+        sock.close()
+        
+        resp_text = response.decode('utf-8', errors='ignore')
+        
+        # Parse WHOIS response
+        result = {
+            'organization': None,
+            'status': None,
+            'created': None
+        }
+        
+        lines = resp_text.split('\n')
+        for line in lines:
+            line_lower = line.lower()
+            
+            # Organization/Company
+            if any(x in line_lower for x in ['organization:', 'org:', 'company:']):
+                result['organization'] = line.split(':', 1)[-1].strip()
+            
+            # Status
+            if 'status:' in line_lower:
+                result['status'] = line.split(':', 1)[-1].strip()
+            
+            # Creation/Created date
+            if any(x in line_lower for x in ['created:', 'creation date:', 'created date:']):
+                result['created'] = line.split(':', 1)[-1].strip()
+        
+        return result
+    except Exception as e:
+        return None
+
+
 def domain_intel(domain):
     global risk
 
@@ -131,17 +184,24 @@ def domain_intel(domain):
             risk += 40
             findings.append(f"VirusTotal: {mal} detecções maliciosas")
 
+    # WHOIS via socket with detailed parsing
     try:
-        w = whois.whois(domain)
-        creation = w.creation_date
-        if isinstance(creation, list):
-            creation = creation[0]
-        if creation:
-            age = (datetime.now() - creation).days
-            if age < 30:
-                risk += 30
-                findings.append(f"Domínio criado há {age} dias")
-    except Exception:
+        whois_data = whois_socket_lookup(domain)
+        if whois_data:
+            whois_info = [f"WHOIS: Dominio {domain}"]
+            if whois_data.get('created'):
+                whois_info.append(f"  └─ Registrado em: {whois_data['created']}")
+            if whois_data.get('status'):
+                whois_info.append(f"  └─ Status: {whois_data['status']}")
+            if whois_data.get('organization'):
+                whois_info.append(f"  └─ Organização: {whois_data['organization']}")
+            else:
+                whois_info.append(f"  └─ Organização: Não informada")
+            
+            findings.extend(whois_info)
+        else:
+            findings.append("WHOIS: falha ao obter dados")
+    except Exception as e:
         findings.append("WHOIS: falha ao obter dados")
 
     try:
@@ -159,6 +219,9 @@ def domain_intel(domain):
         if pulses > 0:
             risk += 25
             findings.append(f"AlienVault OTX: domínio presente em {pulses} pulses")
+    
+    # SiteConfiavel check
+    siteconfiavel_intel(domain)
 
 def url_intel(url):
     global risk
