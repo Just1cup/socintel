@@ -75,7 +75,8 @@ function isValidUrl(value) {
 }
 
 function isValidEmail(value) {
-  if (!/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(value)) return false;
+  // Basic sanity check: no spaces, one @, and at least one dot in domain
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value)) return false;
   const domain = value.split("@")[1];
   return isValidDomain(domain);
 }
