@@ -1,30 +1,46 @@
+"""SOCINTEL backend: multi-source OSINT enrichment with a unified risk score."""
 import requests
 import dns.resolver
 import argparse
 import json
 import sys
 from dotenv import load_dotenv
+from pathlib import Path
 import os
 from datetime import datetime
 import socket
-load_dotenv()
+import time
+import re
+dotenv_path = Path(__file__).resolve().parent / ".env"
+load_dotenv(dotenv_path=dotenv_path)
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 
 VT_API_KEY = os.getenv("VT_API_KEY")
 ABUSE_API_KEY = os.getenv("ABUSE_API_KEY")
 OTX_API_KEY = os.getenv("OTX_API_KEY")
+URLSCAN_API_KEY = os.getenv("URLSCAN_API_KEY")
+URL_IO_KEY = os.getenv("URL_IO_KEY")
 
 
 risk = 0
 findings = []
+_sections = set()
+
+
+def _section(title, desc):
+    key = title.lower()
+    if key in _sections:
+        return
+    _sections.add(key)
+    findings.append(f"=== {title} — {desc} ===")
 
 
 
 def ip_intel(ip):
     global risk
 
-    # VirusTotal
+    _section("VirusTotal", "Reputação e detecções de malícia por múltiplos motores")
     vt_url = f"https://www.virustotal.com/api/v3/ip_addresses/{ip}"
     headers = {"x-apikey": VT_API_KEY}
     try:
@@ -43,7 +59,7 @@ def ip_intel(ip):
     except Exception as e:
         findings.append(f"VirusTotal: erro - {str(e)}")
 
-    # AbuseIPDB
+    _section("AbuseIPDB", "Histórico de abuso reportado para IPs")
     abuse_url = "https://api.abuseipdb.com/api/v2/check"
     headers = {"Key": ABUSE_API_KEY, "Accept": "application/json"}
     params = {"ipAddress": ip, "maxAgeInDays": 90}
@@ -61,7 +77,7 @@ def ip_intel(ip):
     except Exception as e:
         findings.append(f"AbuseIPDB: erro - {str(e)}")
 
-    # AlienVault OTX
+    _section("AlienVault OTX", "Threat intel comunitário via pulses")
     otx_url = f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general"
     headers = {"X-OTX-API-KEY": OTX_API_KEY}
     try:
@@ -79,16 +95,12 @@ def ip_intel(ip):
     except Exception as e:
         findings.append(f"AlienVault OTX: erro - {str(e)}")
 
-    # RDAP / ASN / Owner enrichment
     rdap_ip_intel(ip)
 
 
 def rdap_ip_intel(ip):
-    """
-    Enriquecimento via RDAP (sem API key): owner/handle, país e range.
-    NÃO indica malícia por si só, então soma poucos pontos.
-    """
     global risk
+    _section("RDAP", "Registro do provedor, país e range do IP")
 
     rdap_endpoints = [
         f"https://rdap.arin.net/registry/ip/{ip}",
@@ -119,10 +131,6 @@ def rdap_ip_intel(ip):
     findings.append("RDAP: não foi possível obter dados (endpoints falharam)")
 
 def whois_socket_lookup(domain):
-    """
-    Consulta WHOIS via socket (porta 43).
-    Retorna dict com: creation_date, status, organization, etc.
-    """
     try:
         whois_server = "whois.iana.org"
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -143,7 +151,6 @@ def whois_socket_lookup(domain):
         
         resp_text = response.decode('utf-8', errors='ignore')
         
-        # Parse WHOIS response
         result = {
             'organization': None,
             'status': None,
@@ -154,15 +161,12 @@ def whois_socket_lookup(domain):
         for line in lines:
             line_lower = line.lower()
             
-            # Organization/Company
             if any(x in line_lower for x in ['organization:', 'org:', 'company:']):
                 result['organization'] = line.split(':', 1)[-1].strip()
             
-            # Status
             if 'status:' in line_lower:
                 result['status'] = line.split(':', 1)[-1].strip()
             
-            # Creation/Created date
             if any(x in line_lower for x in ['created:', 'creation date:', 'created date:']):
                 result['created'] = line.split(':', 1)[-1].strip()
         
@@ -174,6 +178,7 @@ def whois_socket_lookup(domain):
 def domain_intel(domain):
     global risk
 
+    _section("VirusTotal", "Reputação e detecções de malícia por múltiplos motores")
     vt_url = f"https://www.virustotal.com/api/v3/domains/{domain}"
     headers = {"x-apikey": VT_API_KEY}
     r = requests.get(vt_url, headers=headers)
@@ -184,7 +189,7 @@ def domain_intel(domain):
             risk += 40
             findings.append(f"VirusTotal: {mal} detecções maliciosas")
 
-    # WHOIS via socket with detailed parsing
+    _section("WHOIS", "Registro do domínio e dados cadastrais")
     try:
         whois_data = whois_socket_lookup(domain)
         if whois_data:
@@ -204,6 +209,7 @@ def domain_intel(domain):
     except Exception as e:
         findings.append("WHOIS: falha ao obter dados")
 
+    _section("DNS", "Presença de MX e sinais de infraestrutura")
     try:
         dns.resolver.resolve(domain, 'MX')
         findings.append("MX record presente (envio de e-mail possível)")
@@ -211,6 +217,7 @@ def domain_intel(domain):
         risk += 20
         findings.append("Sem MX record (domínio suspeito)")
 
+    _section("AlienVault OTX", "Threat intel comunitário via pulses")
     otx_url = f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/general"
     headers = {"X-OTX-API-KEY": OTX_API_KEY}
     r = requests.get(otx_url, headers=headers)
@@ -220,12 +227,15 @@ def domain_intel(domain):
             risk += 25
             findings.append(f"AlienVault OTX: domínio presente em {pulses} pulses")
     
-    # SiteConfiavel check
     siteconfiavel_intel(domain)
 
 def url_intel(url):
     global risk
 
+    _section("urlscan.io", "Scan e análise de comportamento da URL")
+    urlscan_intel(url)
+
+    _section("URLhaus", "Listas de URLs maliciosas conhecidas")
     uh_url = "https://urlhaus-api.abuse.ch/v1/url/"
     data = {"url": url}
     r = requests.post(uh_url, data=data)
@@ -237,9 +247,232 @@ def url_intel(url):
         else:
             findings.append("URLhaus: URL não encontrada")
 
+
+def urlscan_intel(url):
+    """
+    urlscan.io integration following API best practices:
+    - API-Key header
+    - custom User-Agent
+    - search before scan (limited by date)
+    - backoff/retry for 429 + transient errors
+    - graceful handling of missing fields
+    - expose status codes and error messages
+    """
+    if not URLSCAN_API_KEY:
+        findings.append("urlscan.io: API key não configurada (defina URLSCAN_API_KEY)")
+        return
+
+    ua = "SOCINTEL/2.0 (urlscan integration)"
+    headers = {
+        "API-Key": URLSCAN_API_KEY,
+        "User-Agent": ua,
+        "Accept": "application/json",
+    }
+
+    safe_url = _urlscan_escape_query(url)
+    query = f'page.url:"{safe_url}" AND date:>now-7d'
+    params = {"q": query, "size": 1}
+
+    search = _urlscan_request(
+        method="get",
+        url="https://urlscan.io/api/v1/search/",
+        headers=headers,
+        params=params,
+    )
+
+    if search["ok"]:
+        results = search["json"].get("results", [])
+        if results:
+            scan_id = results[0].get("_id", "")
+            result_url = results[0].get("result", "")
+            findings.append("urlscan.io: scan recente encontrado (últimos 7 dias)")
+            if scan_id:
+                findings.append(f"urlscan.io: scan_id {scan_id}")
+            if result_url:
+                findings.append(f"urlscan.io: resultado {result_url}")
+            _append_urlscan_search_summary(results[0])
+            return
+        else:
+            findings.append("urlscan.io: nenhum scan recente encontrado")
+    else:
+        findings.append(
+            f"urlscan.io: erro na busca (HTTP {search['status']}) {search['error']}"
+        )
+
+    visibility = "public"
+    if _url_has_pii(url):
+        visibility = "unlisted"
+
+    payload = {
+        "url": url,
+        "visibility": visibility,
+        "customagent": ua,
+        "tags": ["socintel"],
+    }
+
+    submit = _urlscan_request(
+        method="post",
+        url="https://urlscan.io/api/v1/scan/",
+        headers={**headers, "Content-Type": "application/json"},
+        json=payload,
+    )
+
+    if submit["ok"]:
+        scan_id = submit["json"].get("uuid", "")
+        result_url = submit["json"].get("result", "")
+        findings.append(f"urlscan.io: scan enviado ({visibility})")
+        if scan_id:
+            findings.append(f"urlscan.io: scan_id {scan_id}")
+        if result_url:
+            findings.append(f"urlscan.io: resultado {result_url}")
+
+        if scan_id:
+            result = _urlscan_result(scan_id, headers)
+            if result["ok"]:
+                findings.append("urlscan.io: resultado disponível")
+                verdicts = result["json"].get("verdicts", {})
+                overall = verdicts.get("overall", {})
+                overall_score = overall.get("score")
+                overall_mal = overall.get("malicious")
+                if overall_score is not None:
+                    findings.append(f"urlscan.io: score {overall_score}")
+                if overall_mal is not None:
+                    findings.append(f"urlscan.io: malicious {overall_mal}")
+            else:
+                findings.append(
+                    f"urlscan.io: resultado ainda não disponível (HTTP {result['status']})"
+                )
+
+        for attempt in range(2):
+            search_after = _urlscan_request(
+                method="get",
+                url="https://urlscan.io/api/v1/search/",
+                headers=headers,
+                params=params,
+            )
+            if search_after["ok"]:
+                results_after = search_after["json"].get("results", [])
+                if results_after:
+                    _append_urlscan_search_summary(results_after[0])
+                    break
+            time.sleep(1 + attempt)
+    else:
+        findings.append(
+            f"urlscan.io: erro ao enviar scan (HTTP {submit['status']}) {submit['error']}"
+        )
+
+
+def _urlscan_request(method, url, headers, params=None, json=None, max_retries=4):
+    """
+    Simple exponential backoff with jitter for 429 and transient errors.
+    Returns dict with ok, status, json, error.
+    """
+    backoff = 1.0
+    for attempt in range(max_retries + 1):
+        try:
+            r = requests.request(
+                method=method,
+                url=url,
+                headers=headers,
+                params=params,
+                json=json,
+                timeout=12,
+                allow_redirects=True,
+            )
+            status = r.status_code
+
+            if status == 429 or 500 <= status <= 599:
+                if attempt == max_retries:
+                    return {"ok": False, "status": status, "json": {}, "error": r.text}
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 16)
+                continue
+
+            if status >= 400:
+                return {"ok": False, "status": status, "json": {}, "error": r.text}
+
+            try:
+                data = r.json()
+            except Exception:
+                data = {}
+            return {"ok": True, "status": status, "json": data, "error": ""}
+        except Exception as e:
+            if attempt == max_retries:
+                return {"ok": False, "status": 0, "json": {}, "error": str(e)}
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 16)
+
+
+def _url_has_pii(url):
+    return re.search(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", url, re.I) is not None
+
+
+def _urlscan_escape_query(value):
+    return re.sub(r'([+\-=&|><!(){}\[\]^"~*?:\\/])', r"\\\1", value)
+
+
+def _urlscan_result(scan_id, headers):
+    return _urlscan_request(
+        method="get",
+        url=f"https://urlscan.io/api/v1/result/{scan_id}/",
+        headers=headers,
+        max_retries=3,
+    )
+
+
+def _append_urlscan_search_summary(result):
+    page = result.get("page", {})
+    task = result.get("task", {})
+    verdicts = result.get("verdicts", {})
+    overall = verdicts.get("overall", {})
+    engines = verdicts.get("engines", {})
+    community = verdicts.get("community", {})
+    stats = result.get("stats", {})
+
+    if task.get("time"):
+        findings.append(f"urlscan.io: data {task.get('time')}")
+    # Avoid linking the scanned URL; use screenshot instead.
+    if task.get("screenshotURL"):
+        findings.append(f"urlscan.io: screenshot {task.get('screenshotURL')}")
+    if task.get("domain"):
+        findings.append(f"urlscan.io: domínio {task.get('domain')}")
+    if task.get("apexDomain"):
+        findings.append(f"urlscan.io: apex {task.get('apexDomain')}")
+    if task.get("uuid"):
+        findings.append(f"urlscan.io: uuid {task.get('uuid')}")
+    if task.get("visibility"):
+        findings.append(f"urlscan.io: visibilidade {task.get('visibility')}")
+    if task.get("reportURL"):
+        findings.append(f"urlscan.io: relatório {task.get('reportURL')}")
+    if task.get("screenshotURL"):
+        findings.append(f"urlscan.io: screenshot {task.get('screenshotURL')}")
+    if task.get("domURL"):
+        findings.append(f"urlscan.io: dom {task.get('domURL')}")
+    if page.get("ip"):
+        findings.append(f"urlscan.io: ip {page.get('ip')}")
+    if page.get("country"):
+        findings.append(f"urlscan.io: país {page.get('country')}")
+    if overall.get("score") is not None:
+        findings.append(f"urlscan.io: score {overall.get('score')}")
+    if overall.get("malicious") is not None:
+        findings.append(f"urlscan.io: malicious {overall.get('malicious')}")
+    if engines.get("enginesTotal") is not None:
+        findings.append(f"urlscan.io: engines total {engines.get('enginesTotal')}")
+    if engines.get("maliciousTotal") is not None:
+        findings.append(f"urlscan.io: engines maliciosos {engines.get('maliciousTotal')}")
+    if community.get("votesTotal") is not None:
+        findings.append(f"urlscan.io: votos comunidade {community.get('votesTotal')}")
+    if community.get("votesMalicious") is not None:
+        findings.append(f"urlscan.io: votos maliciosos {community.get('votesMalicious')}")
+    if stats.get("requests") is not None:
+        findings.append(f"urlscan.io: requests {stats.get('requests')}")
+    if stats.get("domains") is not None:
+        findings.append(f"urlscan.io: domains {stats.get('domains')}")
+
 def hash_intel(hash_value):
     global risk
 
+    _section("VirusTotal", "Reputação e detecções de malícia por múltiplos motores")
     vt_url = f"https://www.virustotal.com/api/v3/files/{hash_value}"
     headers = {"x-apikey": VT_API_KEY}
     try:
@@ -263,6 +496,7 @@ def email_intel(email):
         findings.append("Email inválido")
         return
     domain = email.split("@")[1]
+    _section("Email", "Extração do domínio para análise")
     findings.append(f"Domínio do email: {domain}")
     domain_intel(domain)
 
@@ -283,6 +517,7 @@ def normalize_mac(mac: str) -> str:
 def mac_intel(mac: str):
     global risk
 
+    _section("MAC Vendors", "Fabricante do dispositivo pelo prefixo MAC")
     mac = normalize_mac(mac)
     if not mac:
         findings.append("MAC Vendor: MAC inválido")
@@ -297,7 +532,7 @@ def mac_intel(mac: str):
         if r.status_code == 200 and r.text:
             vendor = r.text.strip()
             findings.append(f"MAC Vendor: {vendor}")
-            risk += 1  # enrichment leve
+            risk += 1
         elif r.status_code == 404:
             findings.append("MAC Vendor: fabricante não encontrado")
         else:
@@ -309,8 +544,8 @@ def mac_intel(mac: str):
 def siteconfiavel_intel(target):
     global risk
 
+    _section("SiteConfiavel", "Classificação pública de confiança do site")
     try:
-        # Normaliza domínio
         target = target.strip()
 
         if target.startswith("http://") or target.startswith("https://"):
@@ -334,7 +569,6 @@ def siteconfiavel_intel(target):
         soup = BeautifulSoup(r.text, "html.parser")
         page_text = soup.get_text(" ", strip=True).lower()
 
-        # Heurísticas SOC-friendly
         if any(x in page_text for x in [
             "não é confiável",
             "nao é confiavel",

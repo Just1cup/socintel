@@ -1,7 +1,7 @@
+// UI controller: run analyses, render results, and keep a short history.
 function setType(type) {
   document.getElementById("type").value = type;
   
-  // Atualizar estilo dos botões
   document.querySelectorAll(".type-btn").forEach(btn => {
     if (btn.dataset.type === type) {
       btn.style.backgroundColor = "var(--color-primary)";
@@ -13,20 +13,16 @@ function setType(type) {
   });
 }
 
-// Funções de histórico
 const MAX_HISTORY = 10;
-let searchHistory = []; // Armazenar em memória apenas (não persiste)
+let searchHistory = [];
 
 function saveToHistory(type, value) {
-  // Adicionar novo item no início
   searchHistory.unshift({ type, value, timestamp: new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) });
   
-  // Remover duplicatas (manter apenas a mais recente)
   searchHistory = searchHistory.filter((item, index, self) => 
     index === self.findIndex(t => t.type === item.type && t.value === item.value)
   );
   
-  // Manter apenas os últimos MAX_HISTORY
   searchHistory = searchHistory.slice(0, MAX_HISTORY);
   
   loadHistory();
@@ -62,7 +58,6 @@ function loadFromHistory(type, value) {
   document.getElementById("value").value = value;
 }
 
-// Carregar histórico ao inicializar
 document.addEventListener("DOMContentLoaded", loadHistory);
 
 async function analyze() {
@@ -80,13 +75,11 @@ async function analyze() {
   try {
     const result = await window.socintel.analyze(type, value);
 
-    // Texto principal
     let text = `RISK SCORE: ${result.risk}/100\n\n`;
     result.findings.forEach(f => text += `✔ ${f}\n`);
     text += `\nVEREDITO:\n${result.verdict}`;
-    output.innerText = text;
+    output.innerHTML = linkifyText(text);
 
-    // Badge de risco
     if (result.risk >= 70) {
       badge.innerText = "ALTO RISCO";
       badge.classList.add("bg-danger", "text-white");
@@ -98,10 +91,8 @@ async function analyze() {
       badge.classList.add("bg-success", "text-black");
     }
 
-    // Links OSINT
     linksDiv.innerHTML = generateLinks(type, value);
 
-    // Salvar no histórico
     saveToHistory(type, value);
 
   } catch (err) {
@@ -111,7 +102,25 @@ async function analyze() {
   }
 }
 
+function linkifyText(text) {
+  const escaped = escapeHtml(text);
+  const withLinks = escaped.replace(
+    /(https?:\/\/[^\s<>"']+)/g,
+    '<a href="$1" target="_blank" rel="noopener noreferrer" class="text-primary underline">$1</a>'
+  );
+  return withLinks.replace(/\n/g, "<br>");
+}
 
+function escapeHtml(text) {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+// OSINT quick links tailored to indicator type.
 function generateLinks(type, value) {
   const links = [];
 
@@ -120,7 +129,8 @@ function generateLinks(type, value) {
       vtLink(`https://www.virustotal.com/gui/ip-address/${value}`, "VirusTotal"),
       vtLink(`https://otx.alienvault.com/indicator/ip/${value}`, "AlienVault OTX"),
       vtLink(`https://www.abuseipdb.com/check/${value}`, "AbuseIPDB"),
-      vtLink(`https://any.run/report/?search=${value}`, "Any.run")
+      vtLink(`https://any.run/report/?search=${value}`, "Any.run"),
+      vtLink(`https://urlscan.io/search/#${encodeURIComponent(value)}`, "urlscan.io")
     );
   }
 
@@ -128,15 +138,17 @@ function generateLinks(type, value) {
     links.push(
       vtLink(`https://www.virustotal.com/gui/domain/${value}`, "VirusTotal"),
       vtLink(`https://otx.alienvault.com/indicator/domain/${value}`, "AlienVault OTX"),
-      vtLink(`https://any.run/report/?search=${value}`, "Any.run")
+      vtLink(`https://any.run/report/?search=${value}`, "Any.run"),
+      vtLink(`https://urlscan.io/search/#${encodeURIComponent(value)}`, "urlscan.io")
     );
   }
 
   if (type === "url") {
     links.push(
       vtLink(`https://www.virustotal.com/gui/url/${encodeURIComponent(value)}`, "VirusTotal"),
-      vtLink(`https://urlhaus.abuse.ch/url/${encodeURIComponent(value)}/`, "URLhaus"),
-      vtLink(`https://any.run/report/?search=${encodeURIComponent(value)}`, "Any.run")
+      vtLink(`https://urlhaus.abuse.ch/browse.php?search=${encodeURIComponent(value)}`, "URLhaus"),
+      vtLink(`https://any.run/report/?search=${encodeURIComponent(value)}`, "Any.run"),
+      vtLink(`https://urlscan.io/search/#${encodeURIComponent(value)}`, "urlscan.io")
     );
   }
 

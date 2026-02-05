@@ -2,7 +2,7 @@ const { contextBridge } = require("electron");
 const { exec } = require("child_process");
 const path = require("path");
 
-// caminho absoluto para o script Python
+// Electron bridge to run the backend analyzer.
 const script = path.join(__dirname, "../backend/socintel.py");
 
 contextBridge.exposeInMainWorld("socintel", {
