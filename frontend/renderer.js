@@ -18,9 +18,11 @@ function setType(type) {
     if (btn.dataset.type === type) {
       btn.style.backgroundColor = "var(--color-primary)";
       btn.style.color = "white";
+      btn.classList.add("is-active");
     } else {
       btn.style.backgroundColor = "var(--color-border)";
       btn.style.color = "var(--color-text)";
+      btn.classList.remove("is-active");
     }
   });
 }
@@ -84,7 +86,7 @@ async function analyze() {
   output.innerText = "Executando análise...\n";
   linksDiv.innerHTML = "";
   badge.innerText = "Analisando...";
-  badge.className = "px-3 py-1 rounded text-xs font-bold bg-borderDark text-gray-400";
+  badge.className = "px-3 py-1 rounded text-xs font-bold";
 
   try {
     const result = await window.socintel.analyze(type, value);
@@ -92,25 +94,27 @@ async function analyze() {
     let text = `RISK SCORE: ${result.risk}/100\n\n`;
     output.innerHTML = renderFindings(text, result);
 
+    badge.classList.remove("pulse", "badge-high", "badge-med", "badge-low");
     if (result.risk >= 70) {
       badge.innerText = "ALTO RISCO";
-      badge.classList.add("bg-danger", "text-white");
+      badge.classList.add("badge-high");
     } else if (result.risk >= 40) {
       badge.innerText = "RISCO MÉDIO";
-      badge.classList.add("bg-warning", "text-black");
+      badge.classList.add("badge-med");
     } else {
       badge.innerText = "BAIXO RISCO";
-      badge.classList.add("bg-success", "text-black");
+      badge.classList.add("badge-low");
     }
 
     linksDiv.innerHTML = generateLinks(type, value);
+    requestAnimationFrame(() => badge.classList.add("pulse"));
 
     saveToHistory(type, value);
 
   } catch (err) {
     output.innerText = "Erro:\n" + err;
     badge.innerText = "ERRO";
-    badge.classList.add("bg-danger", "text-white");
+    badge.classList.add("badge-high");
   }
 }
 
