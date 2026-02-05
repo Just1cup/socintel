@@ -1,203 +1,84 @@
-# SOCINTEL
+﻿# SOCINTEL
 
-SOCINTEL é uma ferramenta **OSINT / Threat Intelligence** voltada para uso em **SOC (Security Operations Center)**, permitindo análise de **IP, domínio, URL e email** tanto via **linha de comando (CLI)** quanto por uma **interface gráfica (GUI)** construída com **Electron + Tailwind CSS**.
+SOCINTEL é uma ferramenta OSINT/Threat Intelligence para SOC, com backend em Python e GUI em Electron.
 
-O projeto foi pensado para funcionar em **ambientes Linux (testado em Arch Linux)**, com foco em analistas N1/N2.
+## Visão prática
+- Backend (CLI): análise de IP, domínio, endereço MAC, URL e email
+- GUI (Electron): interface para executar análises e ver resultados
+- Saída em JSON para integração
 
----
+## Pré-requisitos
+- Linux: `python3`, `pip3`, `node`, `npm`
+- Windows: `python` e `pip` no PATH, `node`, `npm`
 
-## 📌 Funcionalidades
-
-* Análise de IP, domínio, URL e email
-* Score de risco consolidado (0–100)
-* Integração com:
-
-  * VirusTotal
-  * AbuseIPDB
-  * AlienVault OTX
-  * URLhaus
-  * Any.run (links externos)
-* Saída dupla:
-
-  * **Humana** (CLI)
-  * **JSON** (GUI)
-* Interface moderna estilo SOC (Any.run / OpenCTI / VirusTotal)
-
----
-
-## 📂 Estrutura do Projeto
-
-```
-socintel/
-├── backend/
-│   ├── socintel.py
-│   └── requirements.txt
-│
-├── frontend/
-│   ├── main.js
-│   ├── preload.js
-│   ├── renderer.js
-│   ├── index.html
-│   └── package.json
-│
-└── README.md
-```
-
----
-
-## 🔧 Dependências
-
-### Backend (Python)
-
-* Python 3.9+
-* requests
-* python-whois
-* dnspython
-
-Instalação:
-
+## Setup rápido 
+Linux:
 ```bash
-cd backend
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+./setup.sh
 ```
 
-Exemplo de `requirements.txt`:
+Windows (PowerShell):
+./setup.ps1 
 
-```
-requests
-python-whois
-dnspython
-```
+Esses scripts:
+1. Instalam as dependências Python do `requirements.txt`
+2. Instalam as dependências do frontend (`npm install`)
+3. Fazem um teste rápido do backend com `--ip 8.8.8.8`
 
----
-
-### Frontend (Electron)
-
-* Node.js 18+
-* npm
-* Electron
-
-Instalação:
-
+## Uso via CLI
+Exemplos:
 ```bash
-cd frontend
-npm install
+python3 backend/socintel.py --ip 8.8.8.8
+python3 backend/socintel.py --domain example.com
+python3 backend/socintel.py --url https://example.com/login
+python3 backend/socintel.py --email user@example.com
+python3 backend/socintel.py --ip 8.8.8.8 --json
 ```
 
----
-
-## ▶️ Uso via CLI (Terminal)
-
-O modo CLI é ideal para automações, scripts e uso direto por analistas.
-
-### Analisar IP
-
+## Uso via GUI (Electron)
 ```bash
-python3 socintel.py --ip 8.8.8.8
-```
-
-### Analisar domínio
-
-```bash
-python3 socintel.py --domain example.com
-```
-
-### Analisar URL
-
-```bash
-python3 socintel.py --url https://example.com/login
-```
-
-### Analisar email
-
-```bash
-python3 socintel.py --email user@example.com
-```
-
-### Saída em JSON (integração / GUI)
-
-```bash
-python3 socintel.py --ip 8.8.8.8 --json
-```
-
-Saída:
-
-```json
-{
-  "risk": 65,
-  "findings": ["VirusTotal: 3 detecções maliciosas"],
-  "verdict": "RISCO MÉDIO – Análise adicional recomendada"
-}
-```
-
----
-
-## 🖥️ Uso via GUI (Electron)
-
-### Executar em modo desenvolvimento
-
-```bash
-cd frontend
 npm start
 ```
 
-A interface gráfica permite:
+## Variáveis de ambiente
+Crie `backend/.env` com as chaves de API:
+```
+VT_API_KEY=...
+ABUSE_API_KEY=...
+OTX_API_KEY=...
+URLSCAN_API_KEY=...
+URL_IO_KEY=...
+```
+As chaves devem ser colocadas logo após o símbolo de igual, mas NÂO de espaço.
 
-* Selecionar o tipo de análise
-* Inserir o valor
-* Visualizar score, veredito e evidências
-* Acessar links diretos para plataformas OSINT
+Exemplo:
 
----
+VT_API_KEY=1234
+ABUSE_API_KEY=456
+OTX_API_KEY=423
+URLSCAN_API_KEY=1234
+URL_IO_KEY=56567
 
-## 🔗 Links OSINT Integrados
 
-Após cada análise, a GUI apresenta links diretos para investigação:
-
-* VirusTotal
-* AlienVault OTX
-* AbuseIPDB
-* URLhaus
-* Any.run
-
-Os links são gerados dinamicamente com base no tipo de entidade analisada.
-
----
-
-## 📦 Compilação da GUI (Build)
-
-Para gerar um executável distribuível da interface gráfica:
-
-### 1️⃣ Instalar electron-builder
-
+## Build da GUI
 ```bash
 npm install --save-dev electron-builder
+npm run build
 ```
 
-### 2️⃣ Atualizar `package.json`
-
-```json
-{
-  "name": "socintel-ui",
-  "version": "1.0.0",
-  "main": "main.js",
-  "scripts": {
-    "start": "electron .",
-    "build": "electron-builder"
-  },
-  "build": {
-    "appId": "com.socintel.app",
-    "linux": {
-      "target": ["AppImage"],
-      "category": "Security"
-    }
-  }
-}
+## Estrutura do projeto
 ```
-
-### 3️⃣ Gerar build
+socintel/
+├── backend/
+│   └── socintel.py
+├── frontend/
+│   ├── main.js
+│   ├── preload.js
+│   └── renderer.js
+├── requirements.txt
+├── setup.sh
+└── setup.ps1
+```
 
 ```bash
 npm run build

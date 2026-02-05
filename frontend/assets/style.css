@@ -27,15 +27,27 @@
       --color-text: #e5e7eb;
       --toggle-bg: #5b21b6;
       --toggle-text: #ffffff;
+      --tooltip-bg: #120c1f;
+      --tooltip-text: #e5e7eb;
+      --tooltip-border: rgba(220, 38, 38, 0.45);
     }
 
     html.light {
-      --color-bg: #f9fafb;
+      --color-bg: #f3f4f6;
       --color-panel: #ffffff;
       --color-primary: #dc2626;
       --color-primary-soft: #ef4444;
-      --color-border: #e5e7eb;
-      --color-text: #111827;
+      --color-border: #d1d5db;
+      --color-text: #1f2937;
       --toggle-bg: #dc2626;
       --toggle-text: #ffffff;
+      --tooltip-bg: #ffffff;
+      --tooltip-text: #1f2937;
+      --tooltip-border: rgba(220, 38, 38, 0.45);
     }
+
+#soc-tooltip {
+  background: var(--tooltip-bg);
+  color: var(--tooltip-text);
+  border: 1px solid var(--tooltip-border);
+}

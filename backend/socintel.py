@@ -4,6 +4,9 @@ import dns.resolver
 import argparse
 import json
 import sys
+import concurrent.futures
+import threading
+import time
 from dotenv import load_dotenv
 from pathlib import Path
 import os
@@ -26,80 +29,123 @@ URL_IO_KEY = os.getenv("URL_IO_KEY")
 risk = 0
 findings = []
 _sections = set()
+_lock = threading.Lock()
+positive_hits = 0
+active_ioc_type = "generic"
+timings = {}
+
+
+def _add_risk(delta):
+    global risk
+    with _lock:
+        risk += delta
+
+
+def _add_hit():
+    global positive_hits
+    with _lock:
+        positive_hits += 1
+
+
+def _timeit(name, fn):
+    start = time.perf_counter()
+    try:
+        return fn()
+    finally:
+        elapsed_ms = int((time.perf_counter() - start) * 1000)
+        with _lock:
+            timings[name] = elapsed_ms
+
+
 
 
 def _section(title, desc):
     key = title.lower()
-    if key in _sections:
-        return
-    _sections.add(key)
-    findings.append(f"=== {title} — {desc} ===")
+    with _lock:
+        if key in _sections:
+            return
+        _sections.add(key)
+        findings.append(f"=== {title} — {desc} ===")
 
 
 
 def ip_intel(ip):
-    global risk
-
-    _section("VirusTotal", "Reputação e detecções de malícia por múltiplos motores")
-    vt_url = f"https://www.virustotal.com/api/v3/ip_addresses/{ip}"
-    headers = {"x-apikey": VT_API_KEY}
-    try:
-        r = requests.get(vt_url, headers=headers, timeout=5)
-        if r.status_code == 200:
-            stats = r.json()["data"]["attributes"]["last_analysis_stats"]
-            mal = stats.get("malicious", 0)
-            if mal > 0:
-                vt_score = min(mal * 3, 40)
-                risk += vt_score
-                findings.append(f"VirusTotal: {mal} detecções maliciosas (+{vt_score} pontos)")
+    def vt_task():
+        _section("VirusTotal", "Reputação e detecções de malícia por múltiplos motores")
+        vt_url = f"https://www.virustotal.com/api/v3/ip_addresses/{ip}"
+        headers = {"x-apikey": VT_API_KEY}
+        try:
+            r = requests.get(vt_url, headers=headers, timeout=5)
+            if r.status_code == 200:
+                stats = r.json()["data"]["attributes"]["last_analysis_stats"]
+                mal = stats.get("malicious", 0)
+                if mal > 0:
+                    vt_score = min(mal * 3, 40)
+                    _add_risk(vt_score)
+                    _add_hit()
+                    findings.append(f"VirusTotal: {mal} detecções maliciosas (+{vt_score} pontos)")
+                else:
+                    findings.append("VirusTotal: nenhuma detecção maliciosa")
             else:
-                findings.append(f"VirusTotal: nenhuma detecção maliciosa")
-        else:
-            findings.append(f"VirusTotal: status {r.status_code}")
-    except Exception as e:
-        findings.append(f"VirusTotal: erro - {str(e)}")
+                findings.append(f"VirusTotal: status {r.status_code}")
+        except Exception as e:
+            findings.append(f"VirusTotal: erro - {str(e)}")
 
-    _section("AbuseIPDB", "Histórico de abuso reportado para IPs")
-    abuse_url = "https://api.abuseipdb.com/api/v2/check"
-    headers = {"Key": ABUSE_API_KEY, "Accept": "application/json"}
-    params = {"ipAddress": ip, "maxAgeInDays": 90}
-    try:
-        r = requests.get(abuse_url, headers=headers, params=params, timeout=5)
-        if r.status_code == 200:
-            score = r.json()["data"]["abuseConfidenceScore"]
-            if score > 0:
-                risk += score
-                findings.append(f"AbuseIPDB: score {score}% (+{score} pontos)")
+    def abuse_task():
+        _section("AbuseIPDB", "Histórico de abuso reportado para IPs")
+        abuse_url = "https://api.abuseipdb.com/api/v2/check"
+        headers = {"Key": ABUSE_API_KEY, "Accept": "application/json"}
+        params = {"ipAddress": ip, "maxAgeInDays": 90}
+        try:
+            r = requests.get(abuse_url, headers=headers, params=params, timeout=5)
+            if r.status_code == 200:
+                score = r.json()["data"]["abuseConfidenceScore"]
+                if score > 0:
+                    _add_risk(score)
+                    _add_hit()
+                    findings.append(f"AbuseIPDB: score {score}% (+{score} pontos)")
+                else:
+                    findings.append("AbuseIPDB: score 0% (sem risco)")
             else:
-                findings.append(f"AbuseIPDB: score 0% (sem risco)")
-        else:
-            findings.append(f"AbuseIPDB: status {r.status_code}")
-    except Exception as e:
-        findings.append(f"AbuseIPDB: erro - {str(e)}")
+                findings.append(f"AbuseIPDB: status {r.status_code}")
+        except Exception as e:
+            findings.append(f"AbuseIPDB: erro - {str(e)}")
 
-    _section("AlienVault OTX", "Threat intel comunitário via pulses")
-    otx_url = f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general"
-    headers = {"X-OTX-API-KEY": OTX_API_KEY}
-    try:
-        r = requests.get(otx_url, headers=headers, timeout=5)
-        if r.status_code == 200:
-            pulses = r.json()["pulse_info"]["count"]
-            if pulses > 0:
-                otx_score = min(pulses * 2, 30)
-                risk += otx_score
-                findings.append(f"AlienVault OTX: IP presente em {pulses} pulses (+{otx_score} pontos)")
+    def otx_task():
+        _section("AlienVault OTX", "Threat intel comunitário via pulses")
+        otx_url = f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general"
+        headers = {"X-OTX-API-KEY": OTX_API_KEY}
+        try:
+            r = requests.get(otx_url, headers=headers, timeout=5)
+            if r.status_code == 200:
+                pulses = r.json()["pulse_info"]["count"]
+                if pulses > 0:
+                    otx_score = min(pulses * 2, 30)
+                    _add_risk(otx_score)
+                    _add_hit()
+                    findings.append(f"AlienVault OTX: IP presente em {pulses} pulses (+{otx_score} pontos)")
+                else:
+                    findings.append("AlienVault OTX: IP não encontrado em nenhum pulse")
             else:
-                findings.append(f"AlienVault OTX: IP não encontrado em nenhum pulse")
-        else:
-            findings.append(f"AlienVault OTX: status {r.status_code}")
-    except Exception as e:
-        findings.append(f"AlienVault OTX: erro - {str(e)}")
+                findings.append(f"AlienVault OTX: status {r.status_code}")
+        except Exception as e:
+            findings.append(f"AlienVault OTX: erro - {str(e)}")
 
-    rdap_ip_intel(ip)
+    def rdap_task():
+        rdap_ip_intel(ip)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [
+            executor.submit(_timeit, "VirusTotal", vt_task),
+            executor.submit(_timeit, "AbuseIPDB", abuse_task),
+            executor.submit(_timeit, "AlienVault OTX", otx_task),
+            executor.submit(_timeit, "RDAP", rdap_task),
+        ]
+        for f in futures:
+            f.result()
 
 
 def rdap_ip_intel(ip):
-    global risk
     _section("RDAP", "Registro do provedor, país e range do IP")
 
     rdap_endpoints = [
@@ -123,7 +169,7 @@ def rdap_ip_intel(ip):
             end = data.get("endAddress") or ""
 
             findings.append(f"RDAP: owner={name} country={country} range={start}-{end}")
-            risk += 2
+            _add_risk(2)
             return
         except Exception:
             continue
@@ -176,76 +222,92 @@ def whois_socket_lookup(domain):
 
 
 def domain_intel(domain):
-    global risk
+    def vt_task():
+        _section("VirusTotal", "Reputação e detecções de malícia por múltiplos motores")
+        vt_url = f"https://www.virustotal.com/api/v3/domains/{domain}"
+        headers = {"x-apikey": VT_API_KEY}
+        try:
+            r = requests.get(vt_url, headers=headers, timeout=5)
+            if r.status_code == 200:
+                stats = r.json()["data"]["attributes"]["last_analysis_stats"]
+                mal = stats.get("malicious", 0)
+                if mal > 0:
+                    _add_risk(40)
+                    _add_hit()
+                    findings.append(f"VirusTotal: {mal} detecções maliciosas")
+        except Exception as e:
+            findings.append(f"VirusTotal: erro - {str(e)}")
 
-    _section("VirusTotal", "Reputação e detecções de malícia por múltiplos motores")
-    vt_url = f"https://www.virustotal.com/api/v3/domains/{domain}"
-    headers = {"x-apikey": VT_API_KEY}
-    r = requests.get(vt_url, headers=headers)
-    if r.status_code == 200:
-        stats = r.json()["data"]["attributes"]["last_analysis_stats"]
-        mal = stats.get("malicious", 0)
-        if mal > 0:
-            risk += 40
-            findings.append(f"VirusTotal: {mal} detecções maliciosas")
-
-    _section("WHOIS", "Registro do domínio e dados cadastrais")
-    try:
-        whois_data = whois_socket_lookup(domain)
-        if whois_data:
-            whois_info = [f"WHOIS: Dominio {domain}"]
-            if whois_data.get('created'):
-                whois_info.append(f"  └─ Registrado em: {whois_data['created']}")
-            if whois_data.get('status'):
-                whois_info.append(f"  └─ Status: {whois_data['status']}")
-            if whois_data.get('organization'):
-                whois_info.append(f"  └─ Organização: {whois_data['organization']}")
+    def whois_task():
+        _section("WHOIS", "Registro do domínio e dados cadastrais")
+        try:
+            whois_data = whois_socket_lookup(domain)
+            if whois_data:
+                whois_info = [f"WHOIS: Dominio {domain}"]
+                if whois_data.get('created'):
+                    whois_info.append(f"  └─ Registrado em: {whois_data['created']}")
+                if whois_data.get('status'):
+                    whois_info.append(f"  └─ Status: {whois_data['status']}")
+                if whois_data.get('organization'):
+                    whois_info.append(f"  └─ Organização: {whois_data['organization']}")
+                else:
+                    whois_info.append("  └─ Organização: Não informada")
+                findings.extend(whois_info)
             else:
-                whois_info.append(f"  └─ Organização: Não informada")
-            
-            findings.extend(whois_info)
-        else:
+                findings.append("WHOIS: falha ao obter dados")
+        except Exception:
             findings.append("WHOIS: falha ao obter dados")
-    except Exception as e:
-        findings.append("WHOIS: falha ao obter dados")
 
-    _section("DNS", "Presença de MX e sinais de infraestrutura")
-    try:
-        dns.resolver.resolve(domain, 'MX')
-        findings.append("MX record presente (envio de e-mail possível)")
-    except Exception:
-        risk += 20
-        findings.append("Sem MX record (domínio suspeito)")
+    def dns_task():
+        _section("DNS", "Presença de MX e sinais de infraestrutura")
+        try:
+            dns.resolver.resolve(domain, 'MX')
+            findings.append("MX record presente (envio de e-mail possível)")
+        except Exception:
+            _add_risk(20)
+            _add_hit()
+            findings.append("Sem MX record (domínio suspeito)")
 
-    _section("AlienVault OTX", "Threat intel comunitário via pulses")
-    otx_url = f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/general"
-    headers = {"X-OTX-API-KEY": OTX_API_KEY}
-    r = requests.get(otx_url, headers=headers)
-    if r.status_code == 200:
-        pulses = r.json()["pulse_info"]["count"]
-        if pulses > 0:
-            risk += 25
-            findings.append(f"AlienVault OTX: domínio presente em {pulses} pulses")
-    
-    siteconfiavel_intel(domain)
+    def otx_task():
+        _section("AlienVault OTX", "Threat intel comunitário via pulses")
+        otx_url = f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/general"
+        headers = {"X-OTX-API-KEY": OTX_API_KEY}
+        try:
+            r = requests.get(otx_url, headers=headers, timeout=5)
+            if r.status_code == 200:
+                pulses = r.json()["pulse_info"]["count"]
+                if pulses > 0:
+                    _add_risk(25)
+                    _add_hit()
+                    findings.append(f"AlienVault OTX: domínio presente em {pulses} pulses")
+        except Exception as e:
+            findings.append(f"AlienVault OTX: erro - {str(e)}")
+
+    def siteconfiavel_task():
+        siteconfiavel_intel(domain)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [
+            executor.submit(_timeit, "VirusTotal", vt_task),
+            executor.submit(_timeit, "WHOIS", whois_task),
+            executor.submit(_timeit, "DNS", dns_task),
+            executor.submit(_timeit, "AlienVault OTX", otx_task),
+            executor.submit(_timeit, "SiteConfiavel", siteconfiavel_task),
+        ]
+        for f in futures:
+            f.result()
 
 def url_intel(url):
-    global risk
+    def urlscan_task():
+        _section("urlscan.io", "Scan e análise de comportamento da URL")
+        urlscan_intel(url)
 
-    _section("urlscan.io", "Scan e análise de comportamento da URL")
-    urlscan_intel(url)
-
-    _section("URLhaus", "Listas de URLs maliciosas conhecidas")
-    uh_url = "https://urlhaus-api.abuse.ch/v1/url/"
-    data = {"url": url}
-    r = requests.post(uh_url, data=data)
-    if r.status_code == 200:
-        status = r.json().get("query_status")
-        if status == "ok":
-            risk += 40
-            findings.append("URLhaus: URL listada como maliciosa")
-        else:
-            findings.append("URLhaus: URL não encontrada")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        futures = [
+            executor.submit(_timeit, "urlscan.io", urlscan_task),
+        ]
+        for f in futures:
+            f.result()
 
 
 def urlscan_intel(url):
@@ -470,22 +532,29 @@ def _append_urlscan_search_summary(result):
         findings.append(f"urlscan.io: domains {stats.get('domains')}")
 
 def hash_intel(hash_value):
-    global risk
-
     _section("VirusTotal", "Reputação e detecções de malícia por múltiplos motores")
     vt_url = f"https://www.virustotal.com/api/v3/files/{hash_value}"
     headers = {"x-apikey": VT_API_KEY}
     try:
         r = requests.get(vt_url, headers=headers, timeout=5)
         if r.status_code == 200:
-            stats = r.json()["data"]["attributes"]["last_analysis_stats"]
+            attributes = r.json()["data"]["attributes"]
+            stats = attributes.get("last_analysis_stats", {})
             mal = stats.get("malicious", 0)
             if mal > 0:
                 vt_score = min(mal * 3, 40)
-                risk += vt_score
+                _add_risk(vt_score)
+                _add_hit()
                 findings.append(f"VirusTotal: {mal} detecções maliciosas (+{vt_score} pontos)")
             else:
                 findings.append(f"VirusTotal: hash não detectado como malicioso")
+            file_name = attributes.get("meaningful_name")
+            if not file_name:
+                names = attributes.get("names") or []
+                if names:
+                    file_name = names[0]
+            if file_name:
+                findings.append(f"VirusTotal: nome do executável {file_name}")
         else:
             findings.append(f"VirusTotal: status {r.status_code}")
     except Exception as e:
@@ -500,13 +569,102 @@ def email_intel(email):
     findings.append(f"Domínio do email: {domain}")
     domain_intel(domain)
 
-def verdict():
-    if risk >= 70:
-        return "ALTO RISCO – Provável ameaça (escalar / bloquear)"
-    elif risk >= 40:
-        return "RISCO MÉDIO – Análise adicional recomendada"
+def _risk_profile(ioc_type):
+    max_by_type = {
+        "ip": 172,
+        "domain": 95,
+        "url": 40,
+        "hash": 40,
+        "email": 95,
+        "mac": 10,
+        "generic": 100,
+    }
+    max_score = max_by_type.get(ioc_type, 100)
+    normalized = int(min(max(risk / max_score * 100, 0), 100))
+
+    if normalized >= 70 and positive_hits < 2:
+        normalized = 69
+        findings.append("Validação: apenas uma fonte positiva; risco ajustado para evitar alertas isolados")
+
+    if normalized >= 70:
+        level = "ALTO"
+    elif normalized >= 40:
+        level = "MÉDIO"
     else:
-        return "BAIXO RISCO – Possível falso positivo"
+        level = "BAIXO"
+
+    return normalized, level
+
+
+def _recommendations(ioc_type, level, normalized):
+    base = {
+        "ALTO": [
+            "Sinais fortes de maliciosidade nas bases consultadas",
+            "Priorizar a correlação com logs e alertas do cliente",
+        ],
+        "MÉDIO": [
+            "Indícios moderados nas bases consultadas",
+            "Reforçar monitoramento e correlacionar com eventos internos",
+        ],
+        "BAIXO": [
+            "Sem sinais relevantes nas bases consultadas",
+            "Manter monitoramento e reavaliar se houver novos alertas",
+        ],
+    }
+    by_ioc = {
+        "ip": {
+            "ALTO": ["IP listado como malicioso em múltiplas fontes; destacar para o cliente"],
+            "MÉDIO": ["IP com sinais parciais; correlacionar com tráfego recente"],
+            "BAIXO": ["IP não encontrado como malicioso nas bases consultadas; validar geolocalização/ASN"],
+        },
+        "domain": {
+            "ALTO": ["Domínio com reputação negativa; correlacionar com acessos e alertas do cliente"],
+            "MÉDIO": ["Domínio com sinais moderados; monitorar DNS/WHOIS e acessos"],
+            "BAIXO": ["Domínio não encontrado como malicioso nas bases consultadas; acompanhar DNS/WHOIS"],
+        },
+        "url": {
+            "ALTO": ["URL classificada como maliciosa; correlacionar com acessos do cliente"],
+            "MÉDIO": ["URL com indícios; revisar contexto e origem"],
+            "BAIXO": ["URL não encontrada como maliciosa nas bases consultadas; reavaliar se houver novos eventos"],
+        },
+        "hash": {
+            "ALTO": ["Hash com detecções confirmadas; correlacionar com endpoints do cliente"],
+            "MÉDIO": ["Hash com sinais parciais; verificar prevalência e origem"],
+            "BAIXO": ["Hash não encontrado como malicioso nas bases consultadas; monitorar por novas detecções"],
+        },
+        "email": {
+            "ALTO": ["Remetente/domínio com sinais de abuso; correlacionar com alertas de phishing"],
+            "MÉDIO": ["Sinais moderados; verificar SPF/DMARC e reputação do domínio"],
+            "BAIXO": ["Domínio do email não encontrado como malicioso nas bases consultadas; manter monitoramento"],
+        },
+        "mac": {
+            "ALTO": ["MAC associado a fabricante suspeito; correlacionar com inventário do cliente"],
+            "MÉDIO": ["MAC com fabricante incomum; monitorar comportamento na rede"],
+            "BAIXO": ["Fabricante identificado; sem sinais de risco nas bases consultadas"],
+        },
+        "generic": {},
+    }
+    recs = base[level] + by_ioc.get(ioc_type, {}).get(level, [])
+    if normalized > 25 and ioc_type in {"ip", "domain", "url", "email", "hash"}:
+        siem_queries = {
+            "ip": "QRadar:\n- Como buscar: Add Filter (Source IP, Destination IP ou Source IP OR Destination IP)\n- Por quê: identificar origem/destino do tráfego e se o IP é atacante, vítima ou pivô\n- Group By: Source IP / Destination IP / Username",
+            "domain": "QRadar:\n- Como buscar: Events -> botão direito no domínio -> Filter on value, depois Search e usar Group By\n- Por quê: comunicação suspeita (C2, download, exfiltração)\n- Group By: Destination IP / Hostname / Username",
+            "url": "QRadar:\n- Como buscar: Add Filter (URL ou HTTP Request URL) ou Payload contains <URL>\n- Por quê: acesso a site malicioso ou download\n- Group By: URL / Source IP / Username",
+            "email": "QRadar:\n- Como buscar: Add Filter (Sender, Recipient) ou Payload contains <email>\n- Por quê: phishing ou campanha de e-mail\n- Group By: Sender / Recipient / Subject",
+            "hash": "QRadar:\n- Como buscar: Add Filter (Payload contains <hash>) e campos de processo (se houver)\n- Por quê: identificar execução de malware\n- Group By: Hostname / Process Name / Username",
+            "mac": "QRadar:\n- Como buscar: Add Filter (MAC Address, Source MAC, Destination MAC)\n- Por quê: identificar dispositivo na rede\n- Group By: MAC / IP / Hostname",
+        }
+        recs.append(siem_queries.get(ioc_type, "Buscar no SIEM por eventos relacionados ao indicador"))
+    return recs
+
+
+def verdict():
+    normalized, level = _risk_profile(active_ioc_type)
+    if level == "ALTO":
+        return f"ALTO RISCO – provável ameaça. Score {normalized}/100"
+    if level == "MÉDIO":
+        return f"RISCO MÉDIO – análise adicional recomendada. Score {normalized}/100"
+    return f"BAIXO RISCO – sem sinais relevantes nas bases consultadas. Score {normalized}/100"
 
 def normalize_mac(mac: str) -> str:
     mac = (mac or "").strip().lower()
@@ -515,8 +673,6 @@ def normalize_mac(mac: str) -> str:
 
 
 def mac_intel(mac: str):
-    global risk
-
     _section("MAC Vendors", "Fabricante do dispositivo pelo prefixo MAC")
     mac = normalize_mac(mac)
     if not mac:
@@ -532,7 +688,8 @@ def mac_intel(mac: str):
         if r.status_code == 200 and r.text:
             vendor = r.text.strip()
             findings.append(f"MAC Vendor: {vendor}")
-            risk += 1
+            _add_risk(1)
+            _add_hit()
         elif r.status_code == 404:
             findings.append("MAC Vendor: fabricante não encontrado")
         else:
@@ -542,8 +699,6 @@ def mac_intel(mac: str):
         findings.append(f"MAC Vendor: erro - {str(e)}")
 
 def siteconfiavel_intel(target):
-    global risk
-
     _section("SiteConfiavel", "Classificação pública de confiança do site")
     try:
         target = target.strip()
@@ -577,7 +732,8 @@ def siteconfiavel_intel(target):
             "cuidado"
         ]):
             findings.append("SiteConfiavel: ALERTA – site classificado como NÃO confiável")
-            risk += 10
+            _add_risk(10)
+            _add_hit()
 
         elif any(x in page_text for x in [
             "site confiável",
@@ -597,22 +753,29 @@ def siteconfiavel_intel(target):
 
 def print_human():
     print("\n🔎 SOCINTEL - RESULTADO\n")
-    capped_risk = min(risk, 100)
-    print(f"RISK SCORE: {capped_risk}/100\n")
+    normalized, level = _risk_profile(active_ioc_type)
+    print(f"RISK SCORE: {normalized}/100 ({level})\n")
     for f in findings:
         print(f"✔ {f}")
     print("\n📌 VEREDITO SOC:")
     print(verdict())
+    print("\n✅ RECOMENDAÇÕES:")
+    for rec in _recommendations(active_ioc_type, level, normalized):
+        print(f"- {rec}")
 
 def print_json():
-    capped_risk = min(risk, 100)
+    normalized, level = _risk_profile(active_ioc_type)
     print(json.dumps({
-        "risk": capped_risk,
+        "risk": normalized,
+        "level": level,
         "findings": findings,
-        "verdict": verdict()
+        "verdict": verdict(),
+        "recommendations": _recommendations(active_ioc_type, level, normalized),
+        "timings_ms": timings
     }))
 
 def main():
+    global active_ioc_type
     parser = argparse.ArgumentParser(description="SOCINTEL v2 - OSINT para SOC N1")
     parser.add_argument("--ip")
     parser.add_argument("--domain")
@@ -625,17 +788,23 @@ def main():
     args = parser.parse_args()
 
     if args.ip:
+        active_ioc_type = "ip"
         ip_intel(args.ip)
     if args.domain:
+        active_ioc_type = "domain"
         domain_intel(args.domain)
     if args.email:
+        active_ioc_type = "email"
         email_intel(args.email)
     if args.url:
+        active_ioc_type = "url"
         url_intel(args.url)
     if args.hash:
+        active_ioc_type = "hash"
         hash_intel(args.hash)
 
     if args.mac:
+        active_ioc_type = "mac"
         mac_intel(args.mac)
     if args.json:
         print_json()
