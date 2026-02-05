@@ -1,12 +1,14 @@
 // UI controller: run analyses, render results, and keep a short history.
 function setType(type) {
+  if (type === "domain" || type === "url") {
+    type = "web";
+  }
   document.getElementById("type").value = type;
   const input = document.getElementById("value");
   const placeholders = {
     ip: "Ex: 8.8.8.8",
-    domain: "Ex: example.com",
+    web: "Ex: example.com ou https://example.com/login",
     email: "Ex: user@example.com",
-    url: "Ex: https://example.com/login",
     hash: "Ex: d41d8cd98f00b204e9800998ecf8427e",
     mac: "Ex: 00:1A:2B:3C:4D:5E"
   };
@@ -242,6 +244,7 @@ function bindTooltipEvents() {
 // OSINT quick links tailored to indicator type.
 function generateLinks(type, value) {
   const links = [];
+  const safeValue = encodeURIComponent(value);
   const vtUrlId = (url) => {
     const utf8 = new TextEncoder().encode(url);
     let binary = "";
@@ -252,40 +255,41 @@ function generateLinks(type, value) {
 
   if (type === "ip") {
     links.push(
-      vtLink(`https://www.virustotal.com/gui/ip-address/${value}`, "VirusTotal"),
-      vtLink(`https://otx.alienvault.com/indicator/ip/${value}`, "AlienVault OTX"),
-      vtLink(`https://www.abuseipdb.com/check/${value}`, "AbuseIPDB"),
-      vtLink(`https://urlscan.io/search/#${encodeURIComponent(value)}`, "urlscan.io")
+      vtLink(`https://www.virustotal.com/gui/ip-address/${safeValue}`, "VirusTotal"),
+      vtLink(`https://otx.alienvault.com/indicator/ip/${safeValue}`, "AlienVault OTX"),
+      vtLink(`https://www.abuseipdb.com/check/${safeValue}`, "AbuseIPDB"),
+      vtLink(`https://urlscan.io/search/#${safeValue}`, "urlscan.io")
     );
   }
 
-  if (type === "domain") {
-    links.push(
-      vtLink(`https://www.virustotal.com/gui/domain/${value}`, "VirusTotal"),
-      vtLink(`https://otx.alienvault.com/indicator/domain/${value}`, "AlienVault OTX"),
-      vtLink(`https://urlscan.io/search/#${encodeURIComponent(value)}`, "urlscan.io")
-    );
-  }
-
-  if (type === "url") {
-    const vtId = vtUrlId(value);
-    links.push(
-      vtLink(`https://www.virustotal.com/gui/url/${vtId}`, "VirusTotal"),
-      vtLink(`https://urlscan.io/search/#${encodeURIComponent(value)}`, "urlscan.io")
-    );
+  if (type === "web") {
+    const isUrl = /^(https?:\/\/)/i.test(value) || value.includes("/") || value.includes("?");
+    if (isUrl) {
+      const vtId = vtUrlId(value);
+      links.push(
+        vtLink(`https://www.virustotal.com/gui/url/${vtId}`, "VirusTotal"),
+        vtLink(`https://urlscan.io/search/#${safeValue}`, "urlscan.io")
+      );
+    } else {
+      links.push(
+        vtLink(`https://www.virustotal.com/gui/domain/${safeValue}`, "VirusTotal"),
+        vtLink(`https://otx.alienvault.com/indicator/domain/${safeValue}`, "AlienVault OTX"),
+        vtLink(`https://urlscan.io/search/#${safeValue}`, "urlscan.io")
+      );
+    }
   }
 
   if (type === "email") {
     const domain = value.split("@")[1];
     links.push(
-      vtLink(`https://www.virustotal.com/gui/domain/${domain}`, "VirusTotal"),
-      vtLink(`https://otx.alienvault.com/indicator/domain/${domain}`, "AlienVault OTX")
+      vtLink(`https://www.virustotal.com/gui/domain/${encodeURIComponent(domain)}`, "VirusTotal"),
+      vtLink(`https://otx.alienvault.com/indicator/domain/${encodeURIComponent(domain)}`, "AlienVault OTX")
     );
   }
 
   if (type === "hash") {
     links.push(
-      vtLink(`https://www.virustotal.com/gui/file/${value}`, "VirusTotal")
+      vtLink(`https://www.virustotal.com/gui/file/${safeValue}`, "VirusTotal")
     );
   }
 

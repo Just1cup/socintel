@@ -310,6 +310,27 @@ def url_intel(url):
             f.result()
 
 
+def web_intel(value):
+    _section("Web", "Análise combinada de domínio e URL")
+    value = (value or "").strip()
+    url_value = None
+    domain_value = None
+
+    if value.startswith("http://") or value.startswith("https://"):
+        url_value = value
+        domain_value = urlparse(value).netloc
+    elif "/" in value or "?" in value:
+        url_value = "http://" + value
+        domain_value = urlparse(url_value).netloc
+    else:
+        domain_value = value
+
+    if domain_value:
+        domain_intel(domain_value)
+    if url_value:
+        url_intel(url_value)
+
+
 def urlscan_intel(url):
     """
     urlscan.io integration following API best practices:
@@ -781,6 +802,7 @@ def main():
     parser.add_argument("--domain")
     parser.add_argument("--email")
     parser.add_argument("--url")
+    parser.add_argument("--web")
     parser.add_argument("--hash")
     parser.add_argument("--mac", help="Endereço MAC para identificar fabricante (MACVendors)")
     parser.add_argument("--json", action="store_true", help="Saída em JSON (para GUI)")
@@ -790,15 +812,18 @@ def main():
     if args.ip:
         active_ioc_type = "ip"
         ip_intel(args.ip)
+    if args.web:
+        active_ioc_type = "web"
+        web_intel(args.web)
     if args.domain:
-        active_ioc_type = "domain"
-        domain_intel(args.domain)
+        active_ioc_type = "web"
+        web_intel(args.domain)
     if args.email:
         active_ioc_type = "email"
         email_intel(args.email)
     if args.url:
-        active_ioc_type = "url"
-        url_intel(args.url)
+        active_ioc_type = "web"
+        web_intel(args.url)
     if args.hash:
         active_ioc_type = "hash"
         hash_intel(args.hash)
