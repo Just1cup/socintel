@@ -1,10 +1,49 @@
 const { contextBridge } = require("electron");
 const { spawn } = require("child_process");
+const fs = require("fs");
 const path = require("path");
 
 const script = path.join(__dirname, "../backend/socintel.py");
+const logDir = path.join(__dirname, "../backend/logs");
 
 const SAFE_TYPE = new Set(["ip", "web", "email", "hash", "mac"]);
+
+function sanitizeModuleName(value) {
+  return String(value || "unknown").replace(/[^a-zA-Z0-9._-]+/g, "_");
+}
+
+function writeErrorLog(moduleName, message, details = "") {
+  try {
+    const now = new Date();
+    const ts = now.toISOString().replace("T", "_").split(".")[0].replace(/:/g, "-");
+    const safeModule = sanitizeModuleName(moduleName);
+    fs.mkdirSync(logDir, { recursive: true });
+    const filePath = path.join(logDir, `${ts}_${safeModule}.log`);
+    const content = [
+      `timestamp: ${ts}`,
+      `module: ${moduleName}`,
+      `message: ${message}`,
+      details ? `details:\n${details}` : ""
+    ].filter(Boolean).join("\n") + "\n";
+    fs.writeFileSync(filePath, content, "utf8");
+  } catch {
+    // no-op: logging must never break the flow
+  }
+}
+
+function detectModuleFromText(text) {
+  const t = String(text || "").toLowerCase();
+  if (t.includes("urlscan")) return "urlscan.io";
+  if (t.includes("virustotal")) return "VirusTotal";
+  if (t.includes("abuseipdb")) return "AbuseIPDB";
+  if (t.includes("alienvault") || t.includes("otx")) return "AlienVault OTX";
+  if (t.includes("whois")) return "WHOIS";
+  if (t.includes("rdap")) return "RDAP";
+  if (t.includes("dns")) return "DNS";
+  if (t.includes("mac")) return "MAC Vendor";
+  if (t.includes("siteconfiavel")) return "SiteConfiavel";
+  return "backend";
+}
 
 function blockDangerousChars(value) {
   return /[\0\r\n`$&|;<>]/.test(value);
@@ -139,17 +178,27 @@ contextBridge.exposeInMainWorld("socintel", {
       });
 
       child.on("error", (err) => {
+        writeErrorLog("backend", "Falha ao iniciar o processo Python", err.message);
         reject(err.message);
       });
 
       child.on("close", (code) => {
         if (code !== 0) {
-          reject(stderr || `Processo Python saiu com código ${code}`);
-          return;
+          try {
+            resolve(JSON.parse(stdout));
+            return;
+          } catch (e) {
+            const moduleName = detectModuleFromText(stderr || stdout);
+            writeErrorLog(moduleName, `Processo Python saiu com código ${code}`, stderr || stdout);
+            reject(stderr || `Processo Python saiu com código ${code}`);
+            return;
+          }
         }
         try {
           resolve(JSON.parse(stdout));
         } catch (e) {
+          const moduleName = detectModuleFromText(stdout);
+          writeErrorLog(moduleName, "Saída inválida do Python", stdout);
           reject("Saída inválida do Python:\n" + stdout);
         }
       });

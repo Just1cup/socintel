@@ -14,6 +14,7 @@ from datetime import datetime
 import socket
 import time
 import re
+import traceback
 dotenv_path = Path(__file__).resolve().parent / ".env"
 load_dotenv(dotenv_path=dotenv_path)
 from bs4 import BeautifulSoup
@@ -23,7 +24,6 @@ VT_API_KEY = os.getenv("VT_API_KEY")
 ABUSE_API_KEY = os.getenv("ABUSE_API_KEY")
 OTX_API_KEY = os.getenv("OTX_API_KEY")
 URLSCAN_API_KEY = os.getenv("URLSCAN_API_KEY")
-URL_IO_KEY = os.getenv("URL_IO_KEY")
 
 
 risk = 0
@@ -33,12 +33,42 @@ _lock = threading.Lock()
 positive_hits = 0
 active_ioc_type = "generic"
 timings = {}
+risk_factors = []
+urlscan_timeout = False
+urlscan_result_url = None
 
 
-def _add_risk(delta):
+def _log_error(module, message, exc=None):
+    try:
+        ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        safe_module = re.sub(r"[^a-zA-Z0-9._-]+", "_", module or "unknown")
+        log_dir = Path(__file__).resolve().parent / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / f"{ts}_{safe_module}.log"
+        parts = [
+            f"timestamp: {ts}",
+            f"module: {module}",
+            f"message: {message}",
+        ]
+        if exc is not None:
+            parts.append("exception:")
+            parts.append(traceback.format_exc().strip())
+        log_file.write_text("\n".join(parts) + "\n", encoding="utf-8")
+    except Exception:
+        # Never let logging crash the analysis.
+        pass
+
+
+def _add_risk(delta, reason=None, source=None):
     global risk
     with _lock:
         risk += delta
+        if reason:
+            risk_factors.append({
+                "reason": reason,
+                "points": delta,
+                "source": source,
+            })
 
 
 def _add_hit():
@@ -80,16 +110,22 @@ def ip_intel(ip):
                 stats = r.json()["data"]["attributes"]["last_analysis_stats"]
                 mal = stats.get("malicious", 0)
                 if mal > 0:
-                    vt_score = min(mal * 3, 40)
-                    _add_risk(vt_score)
+                    vt_score = mal * 5
+                    _add_risk(
+                        vt_score,
+                        reason=f"{mal} detecções maliciosas",
+                        source="VirusTotal",
+                    )
                     _add_hit()
                     findings.append(f"VirusTotal: {mal} detecções maliciosas (+{vt_score} pontos)")
                 else:
                     findings.append("VirusTotal: nenhuma detecção maliciosa")
             else:
                 findings.append(f"VirusTotal: status {r.status_code}")
+                _log_error("VirusTotal", f"HTTP {r.status_code} em IP {ip}")
         except Exception as e:
             findings.append(f"VirusTotal: erro - {str(e)}")
+            _log_error("VirusTotal", f"Falha ao consultar IP {ip}", e)
 
     def abuse_task():
         _section("AbuseIPDB", "Histórico de abuso reportado para IPs")
@@ -101,15 +137,21 @@ def ip_intel(ip):
             if r.status_code == 200:
                 score = r.json()["data"]["abuseConfidenceScore"]
                 if score > 0:
-                    _add_risk(score)
+                    _add_risk(
+                        score,
+                        reason=f"abuseConfidenceScore {score}%",
+                        source="AbuseIPDB",
+                    )
                     _add_hit()
                     findings.append(f"AbuseIPDB: score {score}% (+{score} pontos)")
                 else:
                     findings.append("AbuseIPDB: score 0% (sem risco)")
             else:
                 findings.append(f"AbuseIPDB: status {r.status_code}")
+                _log_error("AbuseIPDB", f"HTTP {r.status_code} em IP {ip}")
         except Exception as e:
             findings.append(f"AbuseIPDB: erro - {str(e)}")
+            _log_error("AbuseIPDB", f"Falha ao consultar IP {ip}", e)
 
     def otx_task():
         _section("AlienVault OTX", "Threat intel comunitário via pulses")
@@ -121,15 +163,21 @@ def ip_intel(ip):
                 pulses = r.json()["pulse_info"]["count"]
                 if pulses > 0:
                     otx_score = min(pulses * 2, 30)
-                    _add_risk(otx_score)
+                    _add_risk(
+                        otx_score,
+                        reason=f"presente em {pulses} pulses",
+                        source="AlienVault OTX",
+                    )
                     _add_hit()
                     findings.append(f"AlienVault OTX: IP presente em {pulses} pulses (+{otx_score} pontos)")
                 else:
                     findings.append("AlienVault OTX: IP não encontrado em nenhum pulse")
             else:
                 findings.append(f"AlienVault OTX: status {r.status_code}")
+                _log_error("AlienVault OTX", f"HTTP {r.status_code} em IP {ip}")
         except Exception as e:
             findings.append(f"AlienVault OTX: erro - {str(e)}")
+            _log_error("AlienVault OTX", f"Falha ao consultar IP {ip}", e)
 
     def rdap_task():
         rdap_ip_intel(ip)
@@ -169,12 +217,17 @@ def rdap_ip_intel(ip):
             end = data.get("endAddress") or ""
 
             findings.append(f"RDAP: owner={name} country={country} range={start}-{end}")
-            _add_risk(2)
+            _add_risk(
+                2,
+                reason="dados de registro e range obtidos",
+                source="RDAP",
+            )
             return
         except Exception:
             continue
 	
     findings.append("RDAP: não foi possível obter dados (endpoints falharam)")
+    _log_error("RDAP", f"Falha ao consultar RDAP para IP {ip}")
 
 def whois_socket_lookup(domain):
     try:
@@ -232,11 +285,19 @@ def domain_intel(domain):
                 stats = r.json()["data"]["attributes"]["last_analysis_stats"]
                 mal = stats.get("malicious", 0)
                 if mal > 0:
-                    _add_risk(40)
+                    vt_score = mal * 5
+                    _add_risk(
+                        vt_score,
+                        reason=f"{mal} detecções maliciosas",
+                        source="VirusTotal",
+                    )
                     _add_hit()
-                    findings.append(f"VirusTotal: {mal} detecções maliciosas")
+                    findings.append(f"VirusTotal: {mal} detecções maliciosas (+{vt_score} pontos)")
+            else:
+                _log_error("VirusTotal", f"HTTP {r.status_code} em domínio {domain}")
         except Exception as e:
             findings.append(f"VirusTotal: erro - {str(e)}")
+            _log_error("VirusTotal", f"Falha ao consultar domínio {domain}", e)
 
     def whois_task():
         _section("WHOIS", "Registro do domínio e dados cadastrais")
@@ -255,8 +316,10 @@ def domain_intel(domain):
                 findings.extend(whois_info)
             else:
                 findings.append("WHOIS: falha ao obter dados")
+                _log_error("WHOIS", f"Falha ao obter dados do domínio {domain}")
         except Exception:
             findings.append("WHOIS: falha ao obter dados")
+            _log_error("WHOIS", f"Falha ao obter dados do domínio {domain}")
 
     def dns_task():
         _section("DNS", "Presença de MX e sinais de infraestrutura")
@@ -264,9 +327,14 @@ def domain_intel(domain):
             dns.resolver.resolve(domain, 'MX')
             findings.append("MX record presente (envio de e-mail possível)")
         except Exception:
-            _add_risk(20)
+            _add_risk(
+                20,
+                reason="sem MX record (domínio suspeito)",
+                source="DNS",
+            )
             _add_hit()
             findings.append("Sem MX record (domínio suspeito)")
+            _log_error("DNS", f"Falha ao resolver MX de {domain}")
 
     def otx_task():
         _section("AlienVault OTX", "Threat intel comunitário via pulses")
@@ -277,11 +345,18 @@ def domain_intel(domain):
             if r.status_code == 200:
                 pulses = r.json()["pulse_info"]["count"]
                 if pulses > 0:
-                    _add_risk(25)
+                    _add_risk(
+                        25,
+                        reason=f"presente em {pulses} pulses",
+                        source="AlienVault OTX",
+                    )
                     _add_hit()
                     findings.append(f"AlienVault OTX: domínio presente em {pulses} pulses")
+            else:
+                _log_error("AlienVault OTX", f"HTTP {r.status_code} em domínio {domain}")
         except Exception as e:
             findings.append(f"AlienVault OTX: erro - {str(e)}")
+            _log_error("AlienVault OTX", f"Falha ao consultar domínio {domain}", e)
 
     def siteconfiavel_task():
         siteconfiavel_intel(domain)
@@ -326,9 +401,17 @@ def web_intel(value):
         domain_value = value
 
     if domain_value:
-        domain_intel(domain_value)
+        try:
+            domain_intel(domain_value)
+        except Exception as e:
+            _log_error("domain_intel", f"Falha ao analisar domínio {domain_value}", e)
+    if not url_value and domain_value:
+        url_value = f"http://{domain_value}"
     if url_value:
-        url_intel(url_value)
+        try:
+            url_intel(url_value)
+        except Exception as e:
+            _log_error("url_intel", f"Falha ao analisar URL {url_value}", e)
 
 
 def urlscan_intel(url):
@@ -341,8 +424,10 @@ def urlscan_intel(url):
     - graceful handling of missing fields
     - expose status codes and error messages
     """
+    global urlscan_result_url, urlscan_timeout
     if not URLSCAN_API_KEY:
         findings.append("urlscan.io: API key não configurada (defina URLSCAN_API_KEY)")
+        _log_error("urlscan.io", "API key não configurada")
         return
 
     ua = "SOCINTEL/2.0 (urlscan integration)"
@@ -366,13 +451,10 @@ def urlscan_intel(url):
     if search["ok"]:
         results = search["json"].get("results", [])
         if results:
-            scan_id = results[0].get("_id", "")
             result_url = results[0].get("result", "")
-            findings.append("urlscan.io: scan recente encontrado (últimos 7 dias)")
-            if scan_id:
-                findings.append(f"urlscan.io: scan_id {scan_id}")
             if result_url:
                 findings.append(f"urlscan.io: resultado {result_url}")
+                urlscan_result_url = result_url
             _append_urlscan_search_summary(results[0])
             return
         else:
@@ -403,46 +485,47 @@ def urlscan_intel(url):
     if submit["ok"]:
         scan_id = submit["json"].get("uuid", "")
         result_url = submit["json"].get("result", "")
-        findings.append(f"urlscan.io: scan enviado ({visibility})")
-        if scan_id:
-            findings.append(f"urlscan.io: scan_id {scan_id}")
         if result_url:
             findings.append(f"urlscan.io: resultado {result_url}")
-
+            urlscan_result_url = result_url
         if scan_id:
-            result = _urlscan_result(scan_id, headers)
-            if result["ok"]:
-                findings.append("urlscan.io: resultado disponível")
-                verdicts = result["json"].get("verdicts", {})
+            try:
+                result = _wait_urlscan_result(scan_id, headers, timeout_sec=20, interval_sec=2)
+                verdicts = result.get("verdicts", {})
                 overall = verdicts.get("overall", {})
-                overall_score = overall.get("score")
                 overall_mal = overall.get("malicious")
-                if overall_score is not None:
-                    findings.append(f"urlscan.io: score {overall_score}")
                 if overall_mal is not None:
-                    findings.append(f"urlscan.io: malicious {overall_mal}")
-            else:
-                findings.append(
-                    f"urlscan.io: resultado ainda não disponível (HTTP {result['status']})"
-                )
+                    if overall_mal is False:
+                        findings.append("urlscan.io: não foram encontrados indicadores de risco")
+                    else:
+                        findings.append(f"urlscan.io: malicioso {overall_mal}")
+                    if overall_mal is False:
+                        _add_risk(
+                            -20,
+                            reason="classificado como não malicioso",
+                            source="urlscan.io",
+                        )
 
-        for attempt in range(2):
-            search_after = _urlscan_request(
-                method="get",
-                url="https://urlscan.io/api/v1/search/",
-                headers=headers,
-                params=params,
-            )
-            if search_after["ok"]:
-                results_after = search_after["json"].get("results", [])
-                if results_after:
-                    _append_urlscan_search_summary(results_after[0])
-                    break
-            time.sleep(1 + attempt)
+                search_after = _urlscan_request(
+                    method="get",
+                    url="https://urlscan.io/api/v1/search/",
+                    headers=headers,
+                    params=params,
+                )
+                if search_after["ok"]:
+                    results_after = search_after["json"].get("results", [])
+                    if results_after:
+                        _append_urlscan_search_summary(results_after[0])
+            except Exception:
+                urlscan_timeout = True
+                findings.append("urlscan.io: scan pendente (resultado ainda não disponível)")
+                _log_error("urlscan.io", f"Timeout ao obter resultado do scan {scan_id}")
     else:
         findings.append(
             f"urlscan.io: erro ao enviar scan (HTTP {submit['status']}) {submit['error']}"
         )
+        urlscan_timeout = True
+        _log_error("urlscan.io", f"Falha ao enviar scan (HTTP {submit['status']})")
 
 
 def _urlscan_request(method, url, headers, params=None, json=None, max_retries=4):
@@ -466,12 +549,14 @@ def _urlscan_request(method, url, headers, params=None, json=None, max_retries=4
 
             if status == 429 or 500 <= status <= 599:
                 if attempt == max_retries:
+                    _log_error("urlscan.io", f"HTTP {status} em {url}")
                     return {"ok": False, "status": status, "json": {}, "error": r.text}
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 16)
                 continue
 
             if status >= 400:
+                _log_error("urlscan.io", f"HTTP {status} em {url}")
                 return {"ok": False, "status": status, "json": {}, "error": r.text}
 
             try:
@@ -481,6 +566,7 @@ def _urlscan_request(method, url, headers, params=None, json=None, max_retries=4
             return {"ok": True, "status": status, "json": data, "error": ""}
         except Exception as e:
             if attempt == max_retries:
+                _log_error("urlscan.io", f"Falha de rede em {url}", e)
                 return {"ok": False, "status": 0, "json": {}, "error": str(e)}
             time.sleep(backoff)
             backoff = min(backoff * 2, 16)
@@ -503,54 +589,37 @@ def _urlscan_result(scan_id, headers):
     )
 
 
-def _append_urlscan_search_summary(result):
-    page = result.get("page", {})
-    task = result.get("task", {})
-    verdicts = result.get("verdicts", {})
-    overall = verdicts.get("overall", {})
-    engines = verdicts.get("engines", {})
-    community = verdicts.get("community", {})
-    stats = result.get("stats", {})
+def _wait_urlscan_result(scan_id, headers, timeout_sec=20, interval_sec=2):
+    deadline = time.time() + timeout_sec
+    last_status = None
 
-    if task.get("time"):
-        findings.append(f"urlscan.io: data {task.get('time')}")
-    # Avoid linking the scanned URL; use screenshot instead.
-    if task.get("screenshotURL"):
-        findings.append(f"urlscan.io: screenshot {task.get('screenshotURL')}")
-    if task.get("domain"):
-        findings.append(f"urlscan.io: domínio {task.get('domain')}")
-    if task.get("apexDomain"):
-        findings.append(f"urlscan.io: apex {task.get('apexDomain')}")
-    if task.get("uuid"):
-        findings.append(f"urlscan.io: uuid {task.get('uuid')}")
-    if task.get("visibility"):
-        findings.append(f"urlscan.io: visibilidade {task.get('visibility')}")
-    if task.get("reportURL"):
-        findings.append(f"urlscan.io: relatório {task.get('reportURL')}")
-    if task.get("screenshotURL"):
-        findings.append(f"urlscan.io: screenshot {task.get('screenshotURL')}")
-    if task.get("domURL"):
-        findings.append(f"urlscan.io: dom {task.get('domURL')}")
-    if page.get("ip"):
-        findings.append(f"urlscan.io: ip {page.get('ip')}")
-    if page.get("country"):
-        findings.append(f"urlscan.io: país {page.get('country')}")
-    if overall.get("score") is not None:
-        findings.append(f"urlscan.io: score {overall.get('score')}")
-    if overall.get("malicious") is not None:
-        findings.append(f"urlscan.io: malicious {overall.get('malicious')}")
-    if engines.get("enginesTotal") is not None:
-        findings.append(f"urlscan.io: engines total {engines.get('enginesTotal')}")
-    if engines.get("maliciousTotal") is not None:
-        findings.append(f"urlscan.io: engines maliciosos {engines.get('maliciousTotal')}")
-    if community.get("votesTotal") is not None:
-        findings.append(f"urlscan.io: votos comunidade {community.get('votesTotal')}")
-    if community.get("votesMalicious") is not None:
-        findings.append(f"urlscan.io: votos maliciosos {community.get('votesMalicious')}")
-    if stats.get("requests") is not None:
-        findings.append(f"urlscan.io: requests {stats.get('requests')}")
-    if stats.get("domains") is not None:
-        findings.append(f"urlscan.io: domains {stats.get('domains')}")
+    while time.time() < deadline:
+        result = _urlscan_result(scan_id, headers)
+        last_status = result.get("status")
+        if result.get("ok"):
+            return result.get("json", {})
+        if last_status not in (0, 202, 404):
+            raise RuntimeError(
+                f"urlscan.io: scan não foi concluido com sucesso (HTTP {last_status})"
+            )
+        time.sleep(interval_sec)
+
+    raise TimeoutError(
+        f"urlscan.io: scan não foi concluido com sucesso (HTTP {last_status})"
+    )
+
+
+def _append_urlscan_search_summary(result):
+    page = result.get("page", {}) or {}
+    task = result.get("task", {}) or {}
+    verdicts = result.get("verdicts", {}) or {}
+    overall = verdicts.get("overall", {}) or {}
+    overall_mal = overall.get("malicious")
+    if overall_mal is not None:
+        if overall_mal is False:
+            findings.append("urlscan.io: não foram encontrados indicadores de risco")
+        else:
+            findings.append(f"urlscan.io: malicioso {overall_mal}")
 
 def hash_intel(hash_value):
     _section("VirusTotal", "Reputação e detecções de malícia por múltiplos motores")
@@ -563,8 +632,12 @@ def hash_intel(hash_value):
             stats = attributes.get("last_analysis_stats", {})
             mal = stats.get("malicious", 0)
             if mal > 0:
-                vt_score = min(mal * 3, 40)
-                _add_risk(vt_score)
+                vt_score = mal * 5
+                _add_risk(
+                    vt_score,
+                    reason=f"{mal} detecções maliciosas",
+                    source="VirusTotal",
+                )
                 _add_hit()
                 findings.append(f"VirusTotal: {mal} detecções maliciosas (+{vt_score} pontos)")
             else:
@@ -578,8 +651,10 @@ def hash_intel(hash_value):
                 findings.append(f"VirusTotal: nome do executável {file_name}")
         else:
             findings.append(f"VirusTotal: status {r.status_code}")
+            _log_error("VirusTotal", f"HTTP {r.status_code} em hash {hash_value}")
     except Exception as e:
         findings.append(f"VirusTotal: erro - {str(e)}")
+        _log_error("VirusTotal", f"Falha ao consultar hash {hash_value}", e)
 
 def email_intel(email):
     if "@" not in email:
@@ -590,7 +665,7 @@ def email_intel(email):
     findings.append(f"Domínio do email: {domain}")
     domain_intel(domain)
 
-def _risk_profile(ioc_type):
+def _risk_max(ioc_type):
     max_by_type = {
         "ip": 172,
         "domain": 95,
@@ -600,7 +675,11 @@ def _risk_profile(ioc_type):
         "mac": 10,
         "generic": 100,
     }
-    max_score = max_by_type.get(ioc_type, 100)
+    return max_by_type.get(ioc_type, 100)
+
+
+def _risk_profile(ioc_type):
+    max_score = _risk_max(ioc_type)
     normalized = int(min(max(risk / max_score * 100, 0), 100))
 
     if normalized >= 70 and positive_hits < 2:
@@ -615,6 +694,32 @@ def _risk_profile(ioc_type):
         level = "BAIXO"
 
     return normalized, level
+
+
+def _risk_explanation(ioc_type, normalized, level):
+    max_score = _risk_max(ioc_type)
+    raw_normalized = int(min(max(risk / max_score * 100, 0), 100))
+    adjusted = raw_normalized >= 70 and positive_hits < 2
+    notes = []
+    if adjusted:
+        notes.append("Validação: apenas uma fonte positiva; risco ajustado para evitar alertas isolados")
+
+    factors = sorted(
+        (risk_factors or []),
+        key=lambda item: item.get("points", 0),
+        reverse=True,
+    )
+
+    return {
+        "raw_score": risk,
+        "max_score": max_score,
+        "normalized": normalized,
+        "level": level,
+        "positive_hits": positive_hits,
+        "adjusted": adjusted,
+        "notes": notes,
+        "factors": factors,
+    }
 
 
 def _recommendations(ioc_type, level, normalized):
@@ -709,7 +814,11 @@ def mac_intel(mac: str):
         if r.status_code == 200 and r.text:
             vendor = r.text.strip()
             findings.append(f"MAC Vendor: {vendor}")
-            _add_risk(1)
+            _add_risk(
+                1,
+                reason="fabricante identificado",
+                source="MAC Vendor",
+            )
             _add_hit()
         elif r.status_code == 404:
             findings.append("MAC Vendor: fabricante não encontrado")
@@ -718,6 +827,7 @@ def mac_intel(mac: str):
 
     except Exception as e:
         findings.append(f"MAC Vendor: erro - {str(e)}")
+        _log_error("MAC Vendor", f"Falha ao consultar MAC {mac}", e)
 
 def siteconfiavel_intel(target):
     _section("SiteConfiavel", "Classificação pública de confiança do site")
@@ -740,6 +850,7 @@ def siteconfiavel_intel(target):
 
         if r.status_code != 200:
             findings.append("SiteConfiavel: não foi possível consultar")
+            _log_error("SiteConfiavel", f"HTTP {r.status_code} em {domain}")
             return
 
         soup = BeautifulSoup(r.text, "html.parser")
@@ -752,8 +863,12 @@ def siteconfiavel_intel(target):
             "site suspeito",
             "cuidado"
         ]):
-            findings.append("SiteConfiavel: ALERTA – site classificado como NÃO confiável")
-            _add_risk(10)
+            findings.append("SiteConfiavel: ALERTA – site classificado como NÃO tendo as métricas de segurança necessárias.")
+            _add_risk(
+                10,
+                reason="classificado como não confiável",
+                source="SiteConfiavel",
+            )
             _add_hit()
 
         elif any(x in page_text for x in [
@@ -762,13 +877,19 @@ def siteconfiavel_intel(target):
             "é seguro",
             "site seguro"
         ]):
-            findings.append("SiteConfiavel: site classificado como confiável")
+            findings.append("SiteConfiavel: site classificado como tendo as métricas de segurança necessárias.")
+            _add_risk(
+                -20,
+                reason="classificado como tendo as métricas de segurança necessárias!",
+                source="SiteConfiavel",
+            )
 
         else:
             findings.append("SiteConfiavel: sem classificação clara")
 
     except Exception as e:
         findings.append(f"SiteConfiavel: erro - {str(e)}")
+        _log_error("SiteConfiavel", f"Falha ao consultar {domain}", e)
 
 
 
@@ -776,6 +897,21 @@ def print_human():
     print("\n🔎 SOCINTEL - RESULTADO\n")
     normalized, level = _risk_profile(active_ioc_type)
     print(f"RISK SCORE: {normalized}/100 ({level})\n")
+    explanation = _risk_explanation(active_ioc_type, normalized, level)
+    print("🧭 COMO O SCORE FOI CALCULADO:")
+    if explanation["factors"]:
+        for factor in explanation["factors"]:
+            points = factor.get("points", 0)
+            sign = "+" if points >= 0 else ""
+            source = factor.get("source")
+            reason = factor.get("reason", "fator não especificado")
+            prefix = f"{source}: " if source else ""
+            print(f"- {sign}{points} {prefix}{reason}")
+    else:
+        print("- Nenhum fator de risco positivo foi identificado")
+    print(f"Score: {normalized}/100 ({level})")
+    for note in explanation["notes"]:
+        print(f"- {note}")
     for f in findings:
         print(f"✔ {f}")
     print("\n📌 VEREDITO SOC:")
@@ -786,12 +922,24 @@ def print_human():
 
 def print_json():
     normalized, level = _risk_profile(active_ioc_type)
+    explanation = _risk_explanation(active_ioc_type, normalized, level)
     print(json.dumps({
         "risk": normalized,
         "level": level,
         "findings": findings,
         "verdict": verdict(),
         "recommendations": _recommendations(active_ioc_type, level, normalized),
+        "risk_factors": explanation["factors"],
+        "risk_meta": {
+            "raw_score": explanation["raw_score"],
+            "max_score": explanation["max_score"],
+            "level": explanation["level"],
+            "positive_hits": explanation["positive_hits"],
+            "adjusted": explanation["adjusted"],
+            "notes": explanation["notes"],
+            "urlscan_timeout": urlscan_timeout,
+            "urlscan_result_url": urlscan_result_url,
+        },
         "timings_ms": timings
     }))
 
@@ -809,28 +957,24 @@ def main():
 
     args = parser.parse_args()
 
-    if args.ip:
-        active_ioc_type = "ip"
-        ip_intel(args.ip)
-    if args.web:
-        active_ioc_type = "web"
-        web_intel(args.web)
-    if args.domain:
-        active_ioc_type = "web"
-        web_intel(args.domain)
-    if args.email:
-        active_ioc_type = "email"
-        email_intel(args.email)
-    if args.url:
-        active_ioc_type = "web"
-        web_intel(args.url)
-    if args.hash:
-        active_ioc_type = "hash"
-        hash_intel(args.hash)
+    ioc_handlers = [
+        ("ip", "ip", ip_intel),
+        ("web", "web", web_intel),
+        ("domain", "web", web_intel),
+        ("email", "email", email_intel),
+        ("url", "web", web_intel),
+        ("hash", "hash", hash_intel),
+        ("mac", "mac", mac_intel),
+    ]
 
-    if args.mac:
-        active_ioc_type = "mac"
-        mac_intel(args.mac)
+    for arg_name, ioc_type, handler in ioc_handlers:
+        value = getattr(args, arg_name, None)
+        if value:
+            active_ioc_type = ioc_type
+            try:
+                handler(value)
+            except Exception as e:
+                _log_error(f"{ioc_type}_intel", f"Falha ao processar {ioc_type}: {value}", e)
     if args.json:
         print_json()
     else:

@@ -82,17 +82,41 @@ async function analyze() {
   const output = document.getElementById("output");
   const badge = document.getElementById("scoreBadge");
   const linksDiv = document.getElementById("links");
+  const scanStatus = document.getElementById("scanStatus");
+  const scanCountdown = document.getElementById("scanCountdown");
+  let countdownTimer = null;
 
   output.innerText = "Executando análise...\n";
   linksDiv.innerHTML = "";
   badge.innerText = "Analisando...";
   badge.className = "px-3 py-1 rounded text-xs font-bold";
+  if (scanStatus) {
+    if (shouldShowScanStatus(type, value)) {
+      scanStatus.style.display = "flex";
+      if (scanCountdown) {
+        let remaining = 20;
+        scanCountdown.textContent = String(remaining);
+        countdownTimer = setInterval(() => {
+          remaining -= 1;
+          if (remaining <= 0) {
+            scanCountdown.textContent = "0";
+            clearInterval(countdownTimer);
+            countdownTimer = null;
+            return;
+          }
+          scanCountdown.textContent = String(remaining);
+        }, 1000);
+      }
+    } else {
+      scanStatus.style.display = "none";
+    }
+  }
 
   try {
     const result = await window.socintel.analyze(type, value);
 
-    let text = `RISK SCORE: ${result.risk}/100\n\n`;
-    output.innerHTML = renderFindings(text, result);
+    const headerHtml = renderRiskHeader(result);
+    output.innerHTML = renderFindings(headerHtml, result);
 
     badge.classList.remove("pulse", "badge-high", "badge-med", "badge-low");
     if (result.risk >= 70) {
@@ -106,17 +130,110 @@ async function analyze() {
       badge.classList.add("badge-low");
     }
 
-    linksDiv.innerHTML = generateLinks(type, value);
+    linksDiv.innerHTML = generateLinks(type, value, result);
     requestAnimationFrame(() => badge.classList.add("pulse"));
+
+    const tooltipText = buildRiskTooltip(result);
+    badge.classList.add("soc-tooltip-target");
+    badge.dataset.tooltip = tooltipText;
+
+    if (scanStatus) {
+      scanStatus.style.display = "none";
+    }
+    if (countdownTimer) {
+      clearInterval(countdownTimer);
+      countdownTimer = null;
+    }
+
+    const urlscanTimeout = result.risk_meta && result.risk_meta.urlscan_timeout;
+    if (urlscanTimeout) {
+      showErrorModal("Scan da URL não foi concluído a tempo. Aguarde alguns momentos e tente novamente.");
+    }
 
     saveToHistory(type, value);
 
   } catch (err) {
-    output.innerText = "Erro:\n" + err;
+    const message = humanizeErrorMessage(err);
+    showErrorModal(message);
+    output.innerText = "";
+    linksDiv.innerHTML = "";
     badge.innerText = "ERRO";
     badge.classList.add("badge-high");
+    if (scanStatus) {
+      scanStatus.style.display = "none";
+    }
+    if (countdownTimer) {
+      clearInterval(countdownTimer);
+      countdownTimer = null;
+    }
   }
 }
+
+function humanizeErrorMessage(err) {
+  let message = "";
+  if (err && typeof err === "object" && "message" in err) {
+    message = String(err.message);
+  } else {
+    message = String(err);
+  }
+
+  const lower = message.toLowerCase();
+
+  if (lower.includes("virustotal")) return "Problema com a API VirusTotal.";
+  if (lower.includes("abuseipdb")) return "Problema com a API AbuseIPDB.";
+  if (lower.includes("alienvault") || lower.includes("otx")) {
+    return "Problema com a API AlienVault OTX.";
+  }
+  if (lower.includes("scan não foi concluido")) {
+    return "Scan da URL não foi concluído com sucesso (limite de 20s).";
+  }
+  if (lower.includes("urlscan")) return "Problema com a API urlscan.io.";
+  if (lower.includes("macvendor")) return "Problema com a API MAC Vendors.";
+  if (lower.includes("siteconfiavel") || lower.includes("siteconfiavel.com.br")) {
+    return "Problema com o scraping da página SiteConfiavel.";
+  }
+  if (lower.includes("rdap")) return "Problema com a consulta RDAP.";
+  if (lower.includes("whois")) return "Problema com a consulta WHOIS.";
+  if (lower.includes("dns")) return "Problema com a consulta DNS.";
+
+  if (lower.includes("inválido") || lower.includes("invalido") || lower.includes("vazio")) {
+    return "Problema no indicador informado.";
+  }
+
+  return "Ocorreu um problema na análise. Tente novamente.";
+}
+
+function showErrorModal(message) {
+  const modal = document.getElementById("errorModal");
+  const messageEl = document.getElementById("errorModalMessage");
+  if (!modal || !messageEl) {
+    window.alert(`erro: ${message}`);
+    return;
+  }
+
+  messageEl.textContent = message;
+  modal.classList.add("is-open");
+  modal.setAttribute("aria-hidden", "false");
+}
+
+function hideErrorModal() {
+  const modal = document.getElementById("errorModal");
+  if (!modal) return;
+  modal.classList.remove("is-open");
+  modal.setAttribute("aria-hidden", "true");
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  const modal = document.getElementById("errorModal");
+  if (!modal) return;
+
+  modal.addEventListener("click", (event) => {
+    const target = event.target;
+    if (target && target.getAttribute("data-modal-close") === "true") {
+      hideErrorModal();
+    }
+  });
+});
 
 function linkifyText(text) {
   const escaped = escapeHtml(text);
@@ -140,9 +257,54 @@ function linkifyEscaped(escapedText) {
   return withLinks.replace(/\n/g, "<br>");
 }
 
+function shouldShowScanStatus(type, value) {
+  if (type !== "web") return false;
+  const trimmed = (value || "").trim();
+  return trimmed.length > 0;
+}
+
+function buildRiskTooltip(result) {
+  const meta = result.risk_meta || {};
+  const factors = Array.isArray(result.risk_factors) ? result.risk_factors : [];
+  const lines = [];
+
+  lines.push(`Score: ${result.risk}/100 (${meta.level || "N/A"})`);
+
+  if (factors.length) {
+    lines.push("Fatores:");
+    factors.forEach((f) => {
+      const points = typeof f.points === "number" ? f.points : 0;
+      const sign = points >= 0 ? "+" : "";
+      const source = f.source ? `${f.source}: ` : "";
+      const reason = f.reason || "fator não especificado";
+      lines.push(`- ${sign}${points} ${source}${reason}`);
+    });
+  } else {
+    lines.push("Fatores: nenhum fator de risco positivo identificado.");
+  }
+
+  if (meta.notes && meta.notes.length) {
+    lines.push("Ajustes:");
+    meta.notes.forEach((note) => lines.push(`- ${note}`));
+  }
+
+  return lines.join("\n");
+}
+
+function renderRiskHeader(result) {
+  const tooltip = escapeHtml(buildRiskTooltip(result));
+  const scoreText = escapeHtml(`${result.risk}/100`);
+  return (
+    `RISK SCORE: ` +
+    `<span class="soc-tooltip-target" data-tooltip="${tooltip}" ` +
+    `style="text-decoration: underline dotted; cursor: help;">${scoreText}</span>` +
+    `\n\n`
+  );
+}
+
 function renderFindings(headerText, result) {
   const lines = [];
-  lines.push(linkifyText(headerText));
+  lines.push(headerText);
 
   const sectionRegex = /^===\s(.+?)\s—\s(.+?)\s===$/;
   const sourceInfo = {
@@ -212,6 +374,10 @@ function ensureTooltip() {
   tooltipEl.style.display = "none";
   tooltipEl.innerHTML = `<div style="font-weight: 700; margin-bottom: 4px;">Resumo</div><div id="soc-tooltip-body"></div>`;
   document.body.appendChild(tooltipEl);
+  const body = tooltipEl.querySelector("#soc-tooltip-body");
+  if (body) {
+    body.style.whiteSpace = "pre-line";
+  }
   return tooltipEl;
 }
 
@@ -230,25 +396,26 @@ function hideTooltip() {
 }
 
 function bindTooltipEvents() {
-  const output = document.getElementById("output");
-  if (!output) return;
-
-  output.addEventListener("mousemove", (e) => {
+  document.addEventListener("mousemove", (e) => {
     const target = e.target;
     if (target && target.classList && target.classList.contains("soc-tooltip-target")) {
       showTooltip(target.dataset.tooltip || "", e.clientX, e.clientY);
     }
   });
 
-  output.addEventListener("mouseleave", () => {
+  document.addEventListener("mouseleave", () => {
     hideTooltip();
   });
 }
 
 // OSINT quick links tailored to indicator type.
-function generateLinks(type, value) {
+function generateLinks(type, value, result) {
   const links = [];
   const safeValue = encodeURIComponent(value);
+  const urlscanResultUrl =
+    result && result.risk_meta && result.risk_meta.urlscan_result_url
+      ? result.risk_meta.urlscan_result_url
+      : null;
   const vtUrlId = (url) => {
     const utf8 = new TextEncoder().encode(url);
     let binary = "";
@@ -272,13 +439,13 @@ function generateLinks(type, value) {
       const vtId = vtUrlId(value);
       links.push(
         vtLink(`https://www.virustotal.com/gui/url/${vtId}`, "VirusTotal"),
-        vtLink(`https://urlscan.io/search/#${safeValue}`, "urlscan.io")
+        vtLink(urlscanResultUrl || `https://urlscan.io/search/#${safeValue}`, "urlscan.io")
       );
     } else {
       links.push(
         vtLink(`https://www.virustotal.com/gui/domain/${safeValue}`, "VirusTotal"),
         vtLink(`https://otx.alienvault.com/indicator/domain/${safeValue}`, "AlienVault OTX"),
-        vtLink(`https://urlscan.io/search/#${safeValue}`, "urlscan.io")
+        vtLink(urlscanResultUrl || `https://urlscan.io/search/#${safeValue}`, "urlscan.io")
       );
     }
   }
