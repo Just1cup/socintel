@@ -167,6 +167,13 @@
         </div>
       </div>
 
+      <div id="scanStatus" class="soc-scan-status" aria-live="polite" style="display: none;">
+        <div class="soc-scan-pill">
+          <span class="soc-scan-dot"></span>
+          URL sendo scaneada... aguardando <span id="scanCountdown">20</span>s
+        </div>
+      </div>
+
       <pre id="output"
         class="flex-1 rounded p-4 text-sm font-mono overflow-auto"
         style="
@@ -181,6 +188,19 @@ Aguardando submissão de indicador para análise OSINT...
 
     </section>
   </main>
+
+  <div id="errorModal" class="soc-modal" role="dialog" aria-modal="true" aria-hidden="true">
+    <div class="soc-modal__backdrop"></div>
+    <div class="soc-modal__panel" role="document">
+      <div class="soc-modal__header">
+        <h3 class="soc-modal__title">Erro</h3>
+      </div>
+      <div id="errorModalMessage" class="soc-modal__body"></div>
+      <div class="soc-modal__footer">
+        <button class="soc-modal__action" data-modal-close="true">OK</button>
+      </div>
+    </div>
+  </div>
   <script>
     const toggle = document.getElementById('themeToggle');
     const html = document.documentElement;
