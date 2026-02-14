@@ -3,8 +3,13 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
-const script = path.join(__dirname, "../backend/socintel.py");
-const logDir = path.join(__dirname, "../backend/logs");
+const defaultScript = path.join(__dirname, "../backend/socintel.py");
+const backendPath = process.env.SOCINTEL_BACKEND || defaultScript;
+
+const preferredLogDir = process.env.SOCINTEL_LOG_DIR;
+const legacyLogDir = path.join(__dirname, "../backend/logs");
+const fallbackLogDir = path.join(process.cwd(), "logs");
+const logDir = preferredLogDir || (fs.existsSync(legacyLogDir) ? legacyLogDir : fallbackLogDir);
 
 const SAFE_TYPE = new Set(["ip", "web", "email", "hash", "mac"]);
 
@@ -163,8 +168,13 @@ contextBridge.exposeInMainWorld("socintel", {
         return;
       }
 
-      const args = [script, `--${type}`, validation.value, "--json"];
-      const child = spawn("python", args, { windowsHide: true });
+      const args = [`--${type}`, validation.value, "--json"];
+      const isPythonScript = backendPath.endsWith(".py");
+      const cmd = isPythonScript
+        ? (process.env.SOCINTEL_PYTHON || (process.platform === "win32" ? "python" : "python3"))
+        : backendPath;
+      const finalArgs = isPythonScript ? [backendPath, ...args] : args;
+      const child = spawn(cmd, finalArgs, { windowsHide: true });
 
       let stdout = "";
       let stderr = "";
