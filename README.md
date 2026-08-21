@@ -1,6 +1,6 @@
 ﻿# SOCINTEL
 
-SOCINTEL é uma ferramenta OSINT/Threat Intelligence para SOC, com backend em Python e GUI em Electron.
+SOCINTEL é uma ferramenta OSINT/Threat Intelligence para SOC, com backend em Python e GUI em Electron. (Versão está atualmente desatualizada, essa é a V1, já estamos na V3. Futuramente postarei aqui a atualização para a V3)
 
 ## Visão prática
 - Backend (CLI): análise de IP, domínio, endereço MAC, URL e email
